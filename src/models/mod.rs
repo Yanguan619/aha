@@ -16,6 +16,8 @@ pub mod minicpm5;
 pub mod moss_audio_tokenizer_nano;
 pub mod moss_tts_nano;
 pub mod paddleocr_vl;
+#[cfg(feature = "laya")]
+pub mod laya;
 pub mod qwen2;
 pub mod qwen2_5vl;
 pub mod qwen3;
@@ -101,6 +103,8 @@ pub enum ModelInstance<'a> {
     SenseVoice(crate::models::sherpa::SenseVoiceModel),
     #[cfg(feature = "sherpa")]
     Kokoro(crate::models::sherpa::KokoroTtsModel),
+    #[cfg(feature = "laya")]
+    Laya(crate::models::laya::LayaRouteModel),
 }
 
 impl<'a> GenerateModel for ModelInstance<'a> {
@@ -138,6 +142,10 @@ impl<'a> GenerateModel for ModelInstance<'a> {
             ModelInstance::SenseVoice(model) => model.generate(mes),
             #[cfg(feature = "sherpa")]
             ModelInstance::Kokoro(model) => model.generate(mes),
+            #[cfg(feature = "laya")]
+            ModelInstance::Laya(_) => Err(anyhow!(
+                "laya is a routing model; use POST /route instead of chat completions"
+            )),
         }
     }
 
@@ -184,6 +192,39 @@ impl<'a> GenerateModel for ModelInstance<'a> {
             ModelInstance::SenseVoice(model) => model.generate_stream(mes),
             #[cfg(feature = "sherpa")]
             ModelInstance::Kokoro(model) => model.generate_stream(mes),
+            #[cfg(feature = "laya")]
+            ModelInstance::Laya(_) => Err(anyhow!(
+                "laya is a routing model; use POST /route instead of chat completions"
+            )),
+        }
+    }
+}
+
+impl<'a> ModelInstance<'a> {
+    /// 取 Laya 路由模型（只有加载了 laya 时才有）。`/route` 端点用它。
+    #[cfg(feature = "laya")]
+    pub fn route_model(&self) -> Option<&crate::models::laya::LayaRouteModel> {
+        match self {
+            ModelInstance::Laya(model) => Some(model),
+            _ => None,
+        }
+    }
+
+    /// 取 SenseVoice（只有加载了 sense-voice 时才有）。`/asr` 端点用它。
+    #[cfg(feature = "sherpa")]
+    pub fn asr_model(&self) -> Option<&crate::models::sherpa::SenseVoiceModel> {
+        match self {
+            ModelInstance::SenseVoice(model) => Some(model),
+            _ => None,
+        }
+    }
+
+    /// 取 Kokoro（只有加载了 kokoro 时才有）。`/tts` 端点用它。
+    #[cfg(feature = "sherpa")]
+    pub fn tts_model(&self) -> Option<&crate::models::sherpa::KokoroTtsModel> {
+        match self {
+            ModelInstance::Kokoro(model) => Some(model),
+            _ => None,
         }
     }
 }
@@ -335,6 +376,15 @@ pub fn load_model<'a>(
                 crate::models::sherpa::kokoro::DEFAULT_SID,
             )?;
             ModelInstance::Kokoro(model)
+        }
+        #[cfg(feature = "laya")]
+        WhichModel::Laya => {
+            let model = crate::models::laya::LayaRouteModel::load(
+                std::path::Path::new(path),
+                crate::models::laya::route::MIN_CONFIDENCE,
+                15_000,
+            )?;
+            ModelInstance::Laya(model)
         }
         _ => {
             let model_id = model_type.as_string();

@@ -99,6 +99,40 @@ pub fn cleanup_pid_file(port: u16) -> Result<()> {
     Ok(())
 }
 
+/// 父进程（桌宠 pet.exe）一死就跟着退出，别留孤儿占着端口。
+///
+/// 移植自旧 asr-route / tts-route / laya-route 的 `--parent-pid` 看门狗
+/// （三个后端都有，委托给 aha 之后这里只留一份）。
+pub fn watch_parent(pid: u32) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+        use windows_sys::Win32::System::Threading::{INFINITE, OpenProcess, WaitForSingleObject};
+
+        // SYNCHRONIZE：windows-sys 0.61 没导出这个常量，值就是 0x00100000。
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+
+        std::thread::spawn(move || unsafe {
+            let handle = OpenProcess(SYNCHRONIZE, 0, pid);
+            if handle.is_null() {
+                eprintln!("[watchdog] 父进程句柄打不开，看门狗没起来 (pid={pid})");
+                return;
+            }
+            let result = WaitForSingleObject(handle, INFINITE);
+            CloseHandle(handle);
+            if result == WAIT_OBJECT_0 {
+                eprintln!("[watchdog] 父进程已退出，跟着收工");
+                std::process::exit(0);
+            }
+        });
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = pid;
+        eprintln!("[watchdog] 非 Windows 平台没有父进程看门狗");
+    }
+}
+
 /// Get the PID from a PID file
 ///
 /// # Arguments

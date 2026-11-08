@@ -99,7 +99,10 @@ impl SenseVoiceModel {
     }
 
     /// Run one offline transcription over 16 kHz mono samples.
-    fn transcribe(&self, samples: &[f32]) -> Result<String> {
+    ///
+    /// `pub` 是因为桌宠那条 `POST /asr`（裸 PCM16LE）契约要走这里；
+    /// OpenAI 风格的 `/audio/transcriptions` 走 [`Self::generate`]。
+    pub fn transcribe(&self, samples: &[f32]) -> Result<String> {
         if samples.is_empty() {
             return Err(anyhow!("empty audio input"));
         }
@@ -110,6 +113,21 @@ impl SenseVoiceModel {
             .get_result()
             .ok_or_else(|| anyhow!("SenseVoice returned no result"))?;
         Ok(clean_sense_voice_text(&result.text))
+    }
+
+    /// 空跑 0.5s 静音：把第一次前向的冷启动挪到"端口开着之前"。
+    pub fn warmup(&self) {
+        if let Err(error) = self.transcribe(&vec![0.0f32; SAMPLE_RATE as usize / 2]) {
+            tracing::warn!(%error, "SenseVoice 预热失败");
+        }
+    }
+
+    pub fn sample_rate(&self) -> i32 {
+        SAMPLE_RATE
+    }
+
+    pub fn model_name(&self) -> &str {
+        &self.model_name
     }
 
     /// Extract the first audio payload from the request and transcribe it.

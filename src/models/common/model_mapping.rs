@@ -94,6 +94,9 @@ pub enum WhichModel {
     #[cfg(feature = "sherpa")]
     #[value(name = "csukuangfj/kokoro-multi-lang-v1_1")]
     Kokoro,
+    #[cfg(feature = "laya")]
+    #[value(name = "convaiinnovations/laya-multilingual")]
+    Laya,
 }
 
 impl WhichModel {
@@ -126,6 +129,34 @@ impl WhichModel {
     #[cfg(feature = "sherpa")]
     pub fn is_sherpa_model(&self) -> bool {
         matches!(self, WhichModel::SenseVoice | WhichModel::Kokoro)
+    }
+
+    /// Laya 决策模型由 sys1 推理，模型目录/权重不在 ModelScope 上。
+    #[cfg(feature = "laya")]
+    pub fn is_laya_model(&self) -> bool {
+        matches!(self, WhichModel::Laya)
+    }
+
+    /// 桌宠委托的三个模型（SenseVoice / Kokoro / Laya）。
+    ///
+    /// 它们由 sherpa/sys1 推理，**不走 onnx 门禁**——尤其是 SenseVoice 的模型 id 里
+    /// 就带 "onnx"（`sherpa-onnx-...`），会被 [`Self::is_onnx`] 误判成"onnx 模型不支持"。
+    #[cfg(any(feature = "sherpa", feature = "laya"))]
+    pub fn is_pet_delegated_model(&self) -> bool {
+        #[cfg(feature = "sherpa")]
+        if self.is_sherpa_model() {
+            return true;
+        }
+        #[cfg(feature = "laya")]
+        if self.is_laya_model() {
+            return true;
+        }
+        false
+    }
+
+    #[cfg(not(any(feature = "sherpa", feature = "laya")))]
+    pub fn is_pet_delegated_model(&self) -> bool {
+        false
     }
 
     /// Get the WhichModel enum list
@@ -202,6 +233,8 @@ impl WhichModel {
             WhichModel::SenseVoice => "asr",
             #[cfg(feature = "sherpa")]
             WhichModel::Kokoro => "tts",
+            #[cfg(feature = "laya")]
+            WhichModel::Laya => "route",
         }
     }
 }

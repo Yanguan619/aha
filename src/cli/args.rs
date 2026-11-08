@@ -15,6 +15,8 @@ pub(crate) enum Commands {
     Cli(CliArgs),
     /// Start service only (--weight-path is optional, defaults to ~/.aha/{model_id})
     Serv(ServArgs),
+    /// 校验模型与二进制编译特征是否对得上（桌宠拉起 Laya 前先问一次）
+    Probe(ProbeArgs),
     /// List all running aha services
     Ps(ServListArgs),
     /// Delete a downloaded model from the default location (~/.aha/{model_id})
@@ -41,6 +43,26 @@ pub(crate) struct ServerCommonArgs {
     /// Allow remote shutdown requests (default: local only, use with caution)
     #[arg(long)]
     pub allow_remote_shutdown: bool,
+
+    /// 桌宠委托模式：父进程 pid；它一死这个服务也退出（防孤儿占端口/显存）。
+    /// 0 = 不启用（默认）。
+    #[arg(long, default_value_t = 0)]
+    pub parent_pid: u32,
+}
+
+/// 桌宠三个模型的额外参数（只对 SenseVoice / Kokoro / Laya 生效，其余模型忽略）。
+#[derive(Args, Debug, Default)]
+pub(crate) struct PetServeArgs {
+    /// Laya 推理设备。**编译期决定**：cpu 用 `--features laya` 编，cuda 用
+    /// `--features laya-cuda`；对不上直接报错退出（不静默降级）。
+    #[arg(long, default_value = "cpu")]
+    pub device: String,
+    /// Laya 低于这个置信度的 vla 判定回退 llm（默认 0.8，和 route.py 一致）。
+    #[arg(long, default_value_t = 0.8)]
+    pub min_confidence: f32,
+    /// Laya 单次推理超时（毫秒）；0 用默认 15000。
+    #[arg(long, default_value_t = 15_000)]
+    pub request_timeout_ms: u64,
 }
 
 #[derive(Args, Debug)]
@@ -75,6 +97,10 @@ pub(crate) struct CliArgs {
     #[command(flatten)]
     pub server_common: ServerCommonArgs,
 
+    /// 桌宠三件套（SenseVoice / Kokoro / Laya）的额外参数
+    #[command(flatten)]
+    pub pet: PetServeArgs,
+
     /// Model download save directory
     #[arg(long)]
     pub save_dir: Option<String>,
@@ -97,8 +123,28 @@ pub(crate) struct ServArgs {
     #[command(flatten)]
     pub server_common: ServerCommonArgs,
 
+    /// 桌宠三件套（SenseVoice / Kokoro / Laya）的额外参数
+    #[command(flatten)]
+    pub pet: PetServeArgs,
+
     #[command(flatten)]
     pub path_common: PathCommonArgs,
+}
+
+/// Arguments for the 'probe' subcommand
+#[derive(Args, Debug)]
+pub(crate) struct ProbeArgs {
+    /// Model type (required)
+    #[arg(short, long)]
+    pub model: WhichModel,
+
+    /// 请求的推理设备（只对 Laya 有意义）
+    #[arg(long, default_value = "cpu")]
+    pub device: String,
+
+    /// 跑一遍判定语料再退出（只对 Laya 有意义；会加载模型）
+    #[arg(long)]
+    pub selftest: bool,
 }
 
 /// Arguments for the 'serv list' subcommand

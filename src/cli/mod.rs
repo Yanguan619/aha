@@ -1,7 +1,9 @@
 use crate::{
-    cli::args::{CliArgs, DeleteArgs, DownloadArgs, ListArgs, RunArgs, ServArgs, ServListArgs},
+    cli::args::{
+        CliArgs, DeleteArgs, DownloadArgs, ListArgs, ProbeArgs, RunArgs, ServArgs, ServListArgs,
+    },
     server::{
-        api::init,
+        api::{InitOptions, init},
         process::{ServiceStatus, find_aha_services},
         start_http_server,
     },
@@ -78,6 +80,7 @@ pub(crate) async fn run_cli(args: CliArgs) -> anyhow::Result<()> {
     let CliArgs {
         model,
         server_common,
+        pet,
         save_dir,
         download_retries,
         path_common,
@@ -93,7 +96,8 @@ pub(crate) async fn run_cli(args: CliArgs) -> anyhow::Result<()> {
             path_common.gguf_path,
             path_common.mmproj_path,
         )
-    } else if model.is_onnx() {
+    } else if model.is_onnx() && !model.is_pet_delegated_model() {
+        // 桌宠三个模型走 sherpa/sys1，不进 onnx 门禁（SenseVoice 的 id 里就带 "onnx"）
         return Err(anyhow!("onnx model not support now"));
     } else {
         let model_path = match path_common.weight_path {
@@ -104,6 +108,13 @@ pub(crate) async fn run_cli(args: CliArgs) -> anyhow::Result<()> {
                     return Err(anyhow!(
                         "{model_id} is served by sherpa-onnx and is not hosted on ModelScope.\n\
                          Download the model (ONNX + tokens/voices) and pass --weight-path <dir>."
+                    ));
+                }
+                #[cfg(feature = "laya")]
+                if model.is_laya_model() {
+                    return Err(anyhow!(
+                        "{model_id} is served by sys1 and is not hosted on ModelScope.\n\
+                         Download the model and pass --weight-path <dir>."
                     ));
                 }
                 let save_dir = match save_dir {
@@ -118,11 +129,22 @@ pub(crate) async fn run_cli(args: CliArgs) -> anyhow::Result<()> {
         (model_path, None, None)
     };
 
-    init(model, model_path, gguf, mmproj)?;
+    init(
+        model,
+        model_path,
+        gguf,
+        mmproj,
+        &InitOptions {
+            device: pet.device,
+            min_confidence: pet.min_confidence,
+            request_timeout_ms: pet.request_timeout_ms,
+        },
+    )?;
     start_http_server(
         server_common.address,
         server_common.port,
         server_common.allow_remote_shutdown,
+        server_common.parent_pid,
     )
     .await?;
 
@@ -134,40 +156,103 @@ pub(crate) async fn run_serv(args: ServArgs) -> anyhow::Result<()> {
     let ServArgs {
         model,
         server_common,
+        pet,
         path_common,
     } = args;
-    let (model_path, gguf, mmproj) = if model.is_gguf() {
+
+    let mut model_path;
+    let weight_path = path_common.weight_path.clone();
+    let (gguf, mmproj) = if model.is_gguf() {
         if path_common.gguf_path.is_none() {
             return Err(anyhow!("gguf model path is required"));
         }
-        (
-            "GGUF".to_string(),
-            path_common.gguf_path,
-            path_common.mmproj_path,
-        )
-    } else if model.is_onnx() {
+        model_path = "GGUF".to_string();
+        (path_common.gguf_path, path_common.mmproj_path)
+    } else if model.is_onnx() && !model.is_pet_delegated_model() {
+        // 桌宠三个模型走 sherpa/sys1，不进 onnx 门禁（SenseVoice 的 id 里就带 "onnx"）
         return Err(anyhow!("onnx model not support now"));
     } else {
-        let model_path = match path_common.weight_path {
-            Some(path) => path,
-            None => get_default_weight_path(model),
-        };
-        if !std::path::Path::new(&model_path).exists() {
-            return Err(anyhow!(
-                "serv subcommand will not download model, use `weight-path` to pass the model path"
-            ));
+        match weight_path.clone() {
+            Some(path) => model_path = path,
+            None => model_path = get_default_weight_path(model),
         }
-        (model_path, None, None)
+        (None, None)
     };
 
-    init(model, model_path, gguf, mmproj)?;
+    // 桌宠委托模式：SenseVoice / Kokoro 首次启动自己按文件列表下载（必填文件齐了就跳过）；
+    // Laya 走 sys1 的 hub（--weight-path 优先，其次 HF 缓存，最后联网下）。
+    #[cfg(feature = "sherpa")]
+    if model.is_sherpa_model() {
+        tracing::info!(dir = %model_path, model = %model.as_string(), "检查 sherpa 模型文件");
+        aha::models::sherpa::ensure_downloaded(&model_path, model)?;
+    }
+    #[cfg(feature = "laya")]
+    if model.is_laya_model() {
+        let (path, source) = aha::models::laya::resolve(weight_path.as_deref(), &model.as_string()).await?;
+        tracing::info!(dir = %path.display(), source, "Laya 模型目录就绪");
+        model_path = path.display().to_string();
+    }
+
+    if !std::path::Path::new(&model_path).exists() {
+        return Err(anyhow!(
+            "serv subcommand will not download model, use `weight-path` to pass the model path"
+        ));
+    }
+
+    init(
+        model,
+        model_path,
+        gguf,
+        mmproj,
+        &InitOptions {
+            device: pet.device,
+            min_confidence: pet.min_confidence,
+            request_timeout_ms: pet.request_timeout_ms,
+        },
+    )?;
     start_http_server(
         server_common.address,
         server_common.port,
         server_common.allow_remote_shutdown,
+        server_common.parent_pid,
     )
     .await?;
 
+    Ok(())
+}
+
+/// Run the 'probe' subcommand: check the binary's compiled features against the
+/// requested device, without loading any model. desktop-pet runs this before
+/// starting the Laya bridge so a device mismatch shows up under the toggle.
+///
+/// `--selftest` additionally loads the model and runs the routing corpus.
+pub(crate) async fn run_probe(args: ProbeArgs) -> anyhow::Result<()> {
+    let ProbeArgs {
+        model,
+        device,
+        selftest,
+    } = args;
+    #[cfg(feature = "laya")]
+    if model.is_laya_model() {
+        aha::models::laya::check_device(&device)?;
+        if selftest {
+            let (path, source) =
+                aha::models::laya::resolve(None, &model.as_string()).await?;
+            tracing::info!(dir = %path.display(), source, "Laya 模型目录就绪");
+            let model = aha::models::laya::LayaRouteModel::load(
+                &path,
+                aha::models::laya::route::MIN_CONFIDENCE,
+                15_000,
+            )?;
+            aha::models::laya::selftest(&model).await?;
+            return Ok(());
+        }
+        println!("{}", aha::models::laya::compile_device());
+        return Ok(());
+    }
+    let _ = selftest;
+    // 非 laya：probe 只确认二进制能跑（桌面端真正拉起前用 --version 探一次）。
+    println!("ok");
     Ok(())
 }
 
@@ -330,6 +415,12 @@ pub(crate) fn run_run(args: RunArgs) -> anyhow::Result<()> {
         #[cfg(feature = "sherpa")]
         WhichModel::Kokoro => {
             kokoro::KokoroExec::run(&input, output.as_deref(), &weight_path)?;
+        }
+        #[cfg(feature = "laya")]
+        WhichModel::Laya => {
+            return Err(anyhow!(
+                "laya 没有 `run` 子命令；启动服务请用 `aha serv --model convaiinnovations/laya-multilingual --weight-path <dir>`"
+            ));
         }
     }
 

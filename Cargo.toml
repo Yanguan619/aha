@@ -54,9 +54,19 @@ derive_builder = "0.20.2"
 kaldi-native-fbank = "0.1.0"
 rand = "0.10.1"
 esaxx-rs = "0.1.10"
+# 日志宏（sherpa 模型下载进度 / 桌宠端点）；没装 subscriber 时是 no-op。
+tracing = "0.1"
 # Optional: sherpa-onnx (SenseVoice ASR / Kokoro TTS). Enable with `--features sherpa`.
-# Building it downloads a prebuilt C++ static library (~117 MB) on first use.
+# 注意必须是 **shared**（动态链接）：sherpa 静态库里内嵌了 protobuf，而 aha 又依赖
+# sentencepiece（也内嵌 protobuf），两个静态库合进一个 exe 会 LNK2005 重复符号。
+# 代价是发行包里 aha.exe 旁边要带 sherpa-onnx 的 DLL（build-release.ps1 会拷）。
 sherpa-onnx = { version = "2.0.1", optional = true, default-features = false }
+# Optional: Laya decision model (sys1 / candle), served by the `route` endpoint.
+sys1 = { version = "0.0.3", optional = true, default-features = false, features = ["cpu"] }
+
+[target.'cfg(windows)'.dependencies]
+# --parent-pid watchdog: 桌宠退出时跟着收工（移植自旧 asr/tts/laya-route）。
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 
 [features]
@@ -65,6 +75,9 @@ cuda = ["candle-nn/cuda", "candle-core/cuda", "candle-transformers/cuda"]
 metal = ["candle-nn/metal", "candle-core/metal", "candle-transformers/metal"]
 ffmpeg = ["ffmpeg-next"]
 sherpa = ["dep:sherpa-onnx", "sherpa-onnx/shared"]
+# Laya 决策模型：CPU 是默认编译特征；要 GPU 用 laya-cuda（sys1 的 cuda 是三选一互斥的）。
+laya = ["dep:sys1"]
+laya-cuda = ["dep:sys1", "sys1/cuda", "cuda"]
 
 [lints.clippy]
 needless_range_loop = "allow"

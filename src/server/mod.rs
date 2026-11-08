@@ -15,6 +15,7 @@ use tower_http::trace::TraceLayer;
 // ASR (Automatic Speech Recognition) API module
 pub(crate) mod api;
 pub(crate) mod asr;
+pub(crate) mod deskpet;
 pub(crate) mod embedding;
 pub(crate) mod error;
 pub(crate) mod process;
@@ -29,9 +30,16 @@ pub(crate) async fn start_http_server(
     address: String,
     port: u16,
     allow_remote_shutdown: bool,
+    parent_pid: u32,
 ) -> anyhow::Result<()> {
     // Set server port for shutdown endpoint
     set_server_port(port, allow_remote_shutdown);
+
+    // 桌宠委托模式：父进程（pet.exe）一死就跟着退出，别留孤儿占着端口。
+    // 和旧 asr-route / tts-route / laya-route 的 --parent-pid 看门狗同一个约定。
+    if parent_pid > 0 {
+        process::watch_parent(parent_pid);
+    }
 
     // Create PID file for service tracking
     let pid = std::process::id();
@@ -106,6 +114,10 @@ fn build_router(shutdown_flag: Arc<AtomicBool>) -> Router {
             "/v1/audio/transcriptions",
             post(asr::transcriptions).layer(DefaultBodyLimit::max(MULTIPART_BODY_LIMIT)),
         )
+        // 桌宠契约：/asr（裸 PCM16LE）、/tts（WAV）、/route（Laya 决策）
+        .route("/asr", post(deskpet::handle_asr))
+        .route("/tts", post(deskpet::handle_tts))
+        .route("/route", post(deskpet::handle_route))
         // Unknown routes and wrong methods also answer with the OpenAI error envelope
         .fallback(error::fallback_not_found)
         .method_not_allowed_fallback(error::fallback_method_not_allowed)

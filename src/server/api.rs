@@ -34,11 +34,23 @@ static SHUTDOWN_FLAG: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 static SERVER_PORT: OnceLock<u16> = OnceLock::new();
 static ALLOW_REMOTE_SHUTDOWN: OnceLock<bool> = OnceLock::new();
 
+/// 服务端初始化选项（只对桌宠三件套有意义，其余模型忽略）。
+#[derive(Debug, Clone, Default)]
+pub struct InitOptions {
+    /// Laya 推理设备（cpu / cuda，编译期特征校验）。
+    pub device: String,
+    /// Laya 置信度门控阈值；<=0 用默认 0.8。
+    pub min_confidence: f32,
+    /// Laya 单次推理超时（毫秒）；0 用默认 15000。
+    pub request_timeout_ms: u64,
+}
+
 pub fn init(
     model_type: WhichModel,
     path: String,
     gguf: Option<String>,
     mmproj: Option<String>,
+    opts: &InitOptions,
 ) -> anyhow::Result<()> {
     let model = if model_type.is_gguf() {
         if let Some(gguf_path) = gguf {
@@ -48,9 +60,31 @@ pub fn init(
         } else {
             return Err(anyhow!("gguf model need gguf model path"));
         }
-    } else if model_type.is_onnx() {
+    } else if model_type.is_onnx() && !model_type.is_pet_delegated_model() {
+        // 桌宠三个模型走 sherpa/sys1，不进 onnx 门禁（SenseVoice 的 id 里就带 "onnx"）
         return Err(anyhow!("onnx comming soon but now not support"));
     } else {
+        // Laya 需要设备校验 + 自定义门控/超时，走自己的加载路径。
+        #[cfg(feature = "laya")]
+        if model_type.is_laya_model() {
+            aha::models::laya::check_device(&opts.device)?;
+            let model = aha::models::laya::LayaRouteModel::load(
+                std::path::Path::new(&path),
+                if opts.min_confidence > 0.0 {
+                    opts.min_confidence
+                } else {
+                    aha::models::laya::route::MIN_CONFIDENCE
+                },
+                opts.request_timeout_ms,
+            )?;
+            MODEL.get_or_init(|| {
+                Arc::new(RwLock::new(StoredModel {
+                    which_model: model_type,
+                    instance: ModelInstance::Laya(model),
+                }))
+            });
+            return Ok(());
+        }
         let model_path = string_to_static_str(path);
         load_model(model_type, model_path, None, None)?
     };
