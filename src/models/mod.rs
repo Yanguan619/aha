@@ -45,7 +45,7 @@ use crate::{
 };
 use anyhow::{Result, anyhow};
 use candle_core::{DType, Device};
-use rocket::futures::Stream;
+use futures_util::Stream;
 
 use crate::models::{
     deepseek_ocr::generate::DeepseekOCRGenerateModel,

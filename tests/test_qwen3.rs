@@ -3,7 +3,7 @@ use std::{pin::pin, time::Instant};
 use aha::models::{GenerateModel, qwen3::generate::Qwen3GenerateModel};
 use aha::params::chat::ChatCompletionParameters;
 use anyhow::Result;
-use rocket::futures::StreamExt;
+use futures_util::StreamExt;
 
 #[test]
 fn qwen3_0_6b_generate() -> Result<()> {

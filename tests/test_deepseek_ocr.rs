@@ -3,7 +3,7 @@ use std::{pin::pin, time::Instant};
 use aha::models::{GenerateModel, deepseek_ocr::generate::DeepseekOCRGenerateModel};
 use aha::params::chat::ChatCompletionParameters;
 use anyhow::Result;
-use rocket::futures::StreamExt;
+use futures_util::StreamExt;
 
 #[test]
 fn deepseek_ocr2_generate() -> Result<()> {

@@ -122,7 +122,11 @@ GET /models
 
 ```json
 {
-  "error": "model not initialized"
+  "error": {
+    "message": "Model not initialized",
+    "type": "service_unavailable",
+    "code": "model_not_loaded"
+  }
 }
 ```
 
@@ -598,7 +602,12 @@ curl http://127.0.0.1:10100/embeddings \
 **错误 (HTTP 400):**
 ```json
 {
-  "error": "embedding input must be a string or an array of strings"
+  "error": {
+    "message": "embedding input must be a string or an array of strings",
+    "type": "invalid_request_error",
+    "param": "input",
+    "code": "invalid_input"
+  }
 }
 ```
 
@@ -673,7 +682,11 @@ curl http://127.0.0.1:10100/rerank \
 **错误 (HTTP 400):**
 ```json
 {
-  "error": "rerank query cannot be empty"
+  "error": {
+    "message": "rerank query cannot be empty",
+    "type": "invalid_request_error",
+    "code": "invalid_input"
+  }
 }
 ```
 
@@ -720,7 +733,11 @@ POST /shutdown
 
 ```json
 {
-  "error": "Remote shutdown not allowed. Use --allow-remote-shutdown flag to enable (not recommended)."
+  "error": {
+    "message": "Remote shutdown not allowed. Use --allow-remote-shutdown flag to enable (not recommended).",
+    "type": "invalid_request_error",
+    "code": "remote_shutdown_forbidden"
+  }
 }
 ```
 
@@ -754,18 +771,25 @@ curl -X POST http://127.0.0.1:10100/shutdown
 
 | 代码 | 描述 |
 |------|------|
-| 400 | 错误请求 - 无效参数 |
-| 404 | 未找到 - 模型或端点未找到 |
+| 400 | 错误请求 - 无效参数或请求体无法解析 |
+| 404 | 未找到 - 未知端点 |
+| 405 | 方法不允许 - 端点存在但不支持该 HTTP 方法 |
+| 413 | 请求体过大 - 超出大小限制（JSON 5 MB / 表单 100 MB） |
+| 415 | 不支持的媒体类型 - 该端点的 `Content-Type` 不正确 |
 | 500 | 内部服务器错误 - 模型推理错误 |
 | 503 | 服务不可用 - 模型未加载 |
 
 ### 错误响应格式
+
+所有错误响应——包括框架产生的 404/405/413/415——都使用同一个 OpenAI 兼容结构。
+`param` 和 `code` 在不适用的场景下会被省略。
 
 ```json
 {
   "error": {
     "message": "未找到模型 'unknown-model'",
     "type": "invalid_request_error",
+    "param": "model",
     "code": "model_not_found"
   }
 }

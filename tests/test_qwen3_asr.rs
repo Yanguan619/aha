@@ -3,7 +3,7 @@ use std::{pin::pin, time::Instant};
 use aha::models::{GenerateModel, qwen3_asr::generate::Qwen3AsrGenerateModel};
 use aha::params::chat::ChatCompletionParameters;
 use anyhow::Result;
-use rocket::futures::StreamExt;
+use futures_util::StreamExt;
 #[test]
 fn qwen3_asr_generate() -> Result<()> {
     // RUST_BACKTRACE=1 cargo test -F cuda --test test_qwen3_asr qwen3_asr_generate -r -- --nocapture

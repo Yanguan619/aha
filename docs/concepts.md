@@ -317,7 +317,7 @@ Dynamic precision selection based on hardware:
      │ HTTP Request
      ▼
 ┌──────────────────────────────────────────────────────────┐
-│  Rocket HTTP Server                                      │
+│  Axum HTTP Server                                        │
 │  - Route request to endpoint                             │
 │  - Parse request body                                    │
 │  - Extract parameters                                    │

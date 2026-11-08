@@ -1,8 +1,8 @@
 use anyhow::Result;
+use async_stream::stream;
 use candle_core::{DType, Device, Tensor};
 use candle_transformers::generation::LogitsProcessor;
-use rocket::async_stream::stream;
-use rocket::futures::Stream;
+use futures_util::Stream;
 use std::time::Instant;
 
 use crate::{
@@ -440,7 +440,7 @@ macro_rules! impl_generate_model {
                 mes: $crate::params::chat::ChatCompletionParameters,
             ) -> anyhow::Result<
                 Box<
-                    dyn rocket::futures::Stream<
+                    dyn futures_util::Stream<
                             Item = anyhow::Result<
                                 $crate::params::chat::ChatCompletionChunkResponse,
                             >,

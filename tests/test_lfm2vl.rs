@@ -5,7 +5,7 @@ use aha::{
     params::chat::ChatCompletionParameters,
 };
 use anyhow::Result;
-use rocket::futures::StreamExt;
+use futures_util::StreamExt;
 #[test]
 fn lfm2vl_generate() -> Result<()> {
     // test with cuda: RUST_BACKTRACE=1 cargo test -F cuda --test test_lfm2vl lfm2vl_generate -r -- --nocapture

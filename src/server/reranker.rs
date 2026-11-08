@@ -1,9 +1,9 @@
-use rocket::{http::Status, post, serde::json::Json};
+use axum::{Json, extract::rejection::JsonRejection, http::StatusCode};
 use serde_json::Value;
 
 use crate::{
     params::rerank::{RerankRequest, RerankResponse, RerankResult},
-    server::api::MODEL,
+    server::{api::MODEL, error},
 };
 
 fn validate_rerank_input(query: &str, documents: &[String]) -> anyhow::Result<()> {
@@ -21,34 +21,30 @@ fn validate_rerank_input(query: &str, documents: &[String]) -> anyhow::Result<()
     Ok(())
 }
 
-#[post("/rerank", data = "<req>")]
-pub(crate) async fn rerank(req: Json<RerankRequest>) -> (Status, Json<Value>) {
-    let req = req.into_inner();
+pub(crate) async fn rerank(
+    payload: Result<Json<RerankRequest>, JsonRejection>,
+) -> (StatusCode, Json<Value>) {
+    let req = match payload {
+        Ok(Json(req)) => req,
+        Err(rejection) => {
+            return error::from_json_rejection(rejection);
+        }
+    };
+
     if let Err(e) = validate_rerank_input(&req.query, &req.documents) {
-        return (
-            Status::BadRequest,
-            Json(serde_json::json!({ "error": e.to_string() })),
-        );
+        return error::invalid_request(e.to_string(), None, Some("invalid_input"));
     }
 
     let model_ref = match MODEL.get().cloned() {
         Some(v) => v,
-        None => {
-            return (
-                Status::ServiceUnavailable,
-                Json(serde_json::json!({ "error": "model not init" })),
-            );
-        }
+        None => return error::model_not_loaded(),
     };
 
     let mut guard = model_ref.write().await;
     let scores = match guard.instance.rerank(&req.query, &req.documents) {
         Ok(v) => v,
         Err(e) => {
-            return (
-                Status::BadRequest,
-                Json(serde_json::json!({ "error": e.to_string() })),
-            );
+            return error::invalid_request(e.to_string(), None, Some("rerank_failed"));
         }
     };
 
@@ -71,5 +67,8 @@ pub(crate) async fn rerank(req: Json<RerankRequest>) -> (Status, Json<Value>) {
         model: guard.which_model.as_string(),
         results,
     };
-    (Status::Ok, Json(serde_json::to_value(response).unwrap()))
+    (
+        StatusCode::OK,
+        Json(serde_json::to_value(response).unwrap()),
+    )
 }

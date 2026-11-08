@@ -1,18 +1,29 @@
 use crate::server::api::set_server_port;
 use crate::server::process::{cleanup_pid_file, create_pid_file};
-use rocket::data::{ByteUnit, Limits};
-use rocket::{Config, routes};
+use axum::{
+    Router,
+    extract::DefaultBodyLimit,
+    middleware,
+    routing::{get, post},
+};
 use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tower_http::trace::TraceLayer;
 
 // ASR (Automatic Speech Recognition) API module
 pub(crate) mod api;
 pub(crate) mod asr;
 pub(crate) mod embedding;
+pub(crate) mod error;
 pub(crate) mod process;
 pub(crate) mod reranker;
+
+/// Default request body limit (5 MiB), same as the previous rocket configuration.
+const DEFAULT_BODY_LIMIT: usize = 5 * 1024 * 1024;
+/// Multipart upload limit for audio transcription endpoints (100 MiB).
+const MULTIPART_BODY_LIMIT: usize = 100 * 1024 * 1024;
 
 pub(crate) async fn start_http_server(
     address: String,
@@ -43,46 +54,224 @@ pub(crate) async fn start_http_server(
         std::process::exit(0);
     });
 
-    let mut builder = rocket::build().configure(Config {
-        address: IpAddr::from_str(&address)?,
-        port,
-        limits: Limits::default()
-            .limit("string", ByteUnit::Mebibyte(5))
-            .limit("json", ByteUnit::Mebibyte(5))
-            .limit("data-form", ByteUnit::Mebibyte(100))
-            .limit("file", ByteUnit::Mebibyte(100)),
-        ..Config::default()
-    });
+    let app = build_router(shutdown_flag);
 
-    builder = builder.mount("/v1/chat", routes![api::chat]);
-    builder = builder.mount("/chat", routes![api::chat]);
-    // /images/remove_background
-    builder = builder.mount("/images", routes![api::remove_background]);
-    // /audio/speech and /audio/transcriptions (ASR transcription endpoint)
-    builder = builder.mount("/audio", routes![api::speech, asr::transcriptions]);
-    // /v1/audio/transcriptions (OpenAI standard ASR transcription endpoint)
-    builder = builder.mount("/v1/audio", routes![asr::transcriptions]);
-    // /embeddings and /v1/embeddings (OpenAI-compatible embeddings endpoint)
-    builder = builder.mount("/", routes![embedding::embeddings]);
-    builder = builder.mount("/v1", routes![embedding::embeddings]);
+    let ip = IpAddr::from_str(&address)?;
+    let listener = tokio::net::TcpListener::bind((ip, port)).await?;
 
-    // /rerank and /v1/rerank (OpenAI-compatible embeddings endpoint)
-    builder = builder.mount("/", routes![reranker::rerank]);
-    builder = builder.mount("/v1", routes![reranker::rerank]);
-
-    // Health check and model info endpoints
-    builder = builder.mount("/", routes![api::health, api::models]);
-    // OpenAI-compatible model listing endpoint: /v1/models
-    builder = builder.mount("/v1", routes![api::models]);
-    // Shutdown endpoint
-    builder = builder.manage(shutdown_flag);
-    builder = builder.mount("/", routes![api::shutdown]);
-
-    let _rocket = builder.launch().await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
 
     // Cleanup PID file when server exits
     cleanup_pid_file(port)?;
     shutdown_handler.abort();
 
     Ok(())
+}
+
+/// Build the axum router serving every aha HTTP endpoint.
+fn build_router(shutdown_flag: Arc<AtomicBool>) -> Router {
+    Router::new()
+        // /v1/chat/completions and /chat/completions
+        .route("/v1/chat/completions", post(api::chat))
+        .route("/chat/completions", post(api::chat))
+        // /images/remove_background
+        .route("/images/remove_background", post(api::remove_background))
+        // /audio/speech
+        .route("/audio/speech", post(api::speech))
+        // /embeddings and /v1/embeddings (OpenAI-compatible embeddings endpoint)
+        .route("/embeddings", post(embedding::embeddings))
+        .route("/v1/embeddings", post(embedding::embeddings))
+        // /rerank and /v1/rerank (OpenAI-compatible rerank endpoint)
+        .route("/rerank", post(reranker::rerank))
+        .route("/v1/rerank", post(reranker::rerank))
+        // Health check and model info endpoints
+        .route("/health", get(api::health))
+        .route("/models", get(api::models))
+        // OpenAI-compatible model listing endpoint: /v1/models
+        .route("/v1/models", get(api::models))
+        // Shutdown endpoint
+        .route("/shutdown", post(api::shutdown))
+        // JSON endpoints share the default request body limit
+        .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
+        // /audio/transcriptions and /v1/audio/transcriptions (ASR transcription endpoint)
+        .route(
+            "/audio/transcriptions",
+            post(asr::transcriptions).layer(DefaultBodyLimit::max(MULTIPART_BODY_LIMIT)),
+        )
+        .route(
+            "/v1/audio/transcriptions",
+            post(asr::transcriptions).layer(DefaultBodyLimit::max(MULTIPART_BODY_LIMIT)),
+        )
+        // Unknown routes and wrong methods also answer with the OpenAI error envelope
+        .fallback(error::fallback_not_found)
+        .method_not_allowed_fallback(error::fallback_method_not_allowed)
+        // Rewrite any framework-generated error (413/415/...) into the same envelope
+        .layer(middleware::from_fn(error::normalize_error_response))
+        .layer(TraceLayer::new_for_http())
+        .with_state(shutdown_flag)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Start a router on an ephemeral port and return its base URL.
+    async fn spawn_server() -> String {
+        let app = build_router(Arc::new(AtomicBool::new(false)));
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn test_health_route_without_model() {
+        let base = spawn_server().await;
+        let response = reqwest::get(format!("{base}/health")).await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        let body: serde_json::Value =
+            serde_json::from_str(&response.text().await.unwrap()).unwrap();
+        assert_eq!(body["status"], "unhealthy");
+        assert_eq!(body["error"], "model not initialized");
+    }
+
+    #[tokio::test]
+    async fn test_models_route_without_model() {
+        let base = spawn_server().await;
+        for path in ["/models", "/v1/models"] {
+            let response = reqwest::get(format!("{base}{path}")).await.unwrap();
+            assert_eq!(
+                response.status(),
+                reqwest::StatusCode::SERVICE_UNAVAILABLE,
+                "unexpected status for {path}"
+            );
+            let body: serde_json::Value =
+                serde_json::from_str(&response.text().await.unwrap()).unwrap();
+            assert_eq!(body["error"]["message"], "Model not initialized");
+            assert_eq!(body["error"]["type"], "service_unavailable");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_chat_route_reachable_without_model() {
+        let base = spawn_server().await;
+        let response = reqwest::Client::new()
+            .post(format!("{base}/v1/chat/completions"))
+            .json(&serde_json::json!({
+                "model": "test",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": false
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        let body: serde_json::Value =
+            serde_json::from_str(&response.text().await.unwrap()).unwrap();
+        assert_eq!(body["error"]["message"], "Model not initialized");
+    }
+
+    #[tokio::test]
+    async fn test_invalid_json_returns_openai_error() {
+        let base = spawn_server().await;
+        let response = reqwest::Client::new()
+            .post(format!("{base}/v1/chat/completions"))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body("{ not valid json ")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+        let body: serde_json::Value =
+            serde_json::from_str(&response.text().await.unwrap()).unwrap();
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(body["error"]["code"], "invalid_body");
+    }
+
+    #[tokio::test]
+    async fn test_unknown_route_returns_404() {
+        let base = spawn_server().await;
+        let response = reqwest::get(format!("{base}/not-exist")).await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+        let body: serde_json::Value =
+            serde_json::from_str(&response.text().await.unwrap()).unwrap();
+        assert_eq!(body["error"]["code"], "unknown_endpoint");
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+    }
+
+    #[tokio::test]
+    async fn test_wrong_method_returns_openai_error() {
+        let base = spawn_server().await;
+        let response = reqwest::Client::new()
+            .get(format!("{base}/v1/chat/completions"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::METHOD_NOT_ALLOWED);
+        let body: serde_json::Value =
+            serde_json::from_str(&response.text().await.unwrap()).unwrap();
+        assert_eq!(body["error"]["code"], "method_not_allowed");
+    }
+
+    #[tokio::test]
+    async fn test_oversized_body_returns_openai_error() {
+        let base = spawn_server().await;
+        // The default JSON body limit is 5 MiB.
+        let oversized = "x".repeat(DEFAULT_BODY_LIMIT + 1024);
+        let response = reqwest::Client::new()
+            .post(format!("{base}/v1/chat/completions"))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(oversized)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE);
+        let body: serde_json::Value =
+            serde_json::from_str(&response.text().await.unwrap()).unwrap();
+        assert_eq!(body["error"]["message"], "Request body is too large");
+    }
+
+    #[tokio::test]
+    async fn test_transcription_multipart_reaches_model() {
+        let base = spawn_server().await;
+        let boundary = "----ahaTestBoundary";
+        let body = format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"file\"; filename=\"sample.wav\"\r\n\
+             Content-Type: audio/wav\r\n\r\n\
+             fake-audio-bytes\r\n\
+             --{boundary}\r\n\
+             Content-Disposition: form-data; name=\"language\"\r\n\r\n\
+             zh\r\n\
+             --{boundary}--\r\n"
+        );
+        let response = reqwest::Client::new()
+            .post(format!("{base}/v1/audio/transcriptions"))
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        // Multipart parsed fine and hit the handler; the model simply is not loaded.
+        assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        let body: serde_json::Value =
+            serde_json::from_str(&response.text().await.unwrap()).unwrap();
+        assert_eq!(body["error"]["message"], "Model not initialized");
+    }
 }

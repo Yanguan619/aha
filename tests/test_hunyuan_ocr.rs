@@ -3,7 +3,7 @@ use std::{pin::pin, time::Instant};
 use aha::models::{GenerateModel, hunyuan_ocr::generate::HunyuanOCRGenerateModel};
 use aha::params::chat::ChatCompletionParameters;
 use anyhow::Result;
-use rocket::futures::StreamExt;
+use futures_util::StreamExt;
 
 #[test]
 fn hunyuan_ocr_generate() -> Result<()> {

@@ -7,7 +7,7 @@ use anyhow::{Result, anyhow};
 use base64::{Engine, prelude::BASE64_STANDARD};
 use candle_core::{DType, Device, Tensor, pickle::read_all_with_key};
 use candle_nn::VarBuilder;
-use rocket::futures::{Stream, stream};
+use futures_util::{Stream, stream};
 
 use crate::{
     models::{

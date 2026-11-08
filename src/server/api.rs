@@ -7,18 +7,19 @@ use aha::models::{GenerateModel, ModelInstance, common::model_mapping::WhichMode
 use aha::params::chat::ChatCompletionParameters;
 use aha::utils::string_to_static_str;
 use anyhow::anyhow;
-use rocket::futures::StreamExt;
-use rocket::serde::{Serialize, json::Json};
-use rocket::{
-    Request, State,
-    futures::Stream,
-    get,
-    http::{ContentType, Status},
-    post,
-    response::{Responder, stream::TextStream},
+use axum::{
+    Json,
+    body::{Body, Bytes},
+    extract::{ConnectInfo, State, rejection::JsonRejection},
+    http::{StatusCode, header},
+    response::{IntoResponse, Response},
 };
+use futures_util::{Stream, StreamExt};
+use serde::Serialize;
+use std::net::SocketAddr;
 use tokio::sync::RwLock;
 
+use crate::server::error;
 use crate::server::process::cleanup_pid_file;
 
 /// Wrapper to store model type together with the model instance
@@ -76,60 +77,61 @@ pub fn get_shutdown_flag() -> Arc<AtomicBool> {
         .clone()
 }
 
-pub(crate) enum Response<R: Stream<Item = String> + Send> {
-    Stream(TextStream<R>),
-    Text(String),
-    Error(String),
-}
-
-impl<'r, 'o: 'r, R> Responder<'r, 'o> for Response<R>
+/// Build a `text/event-stream` response from a stream of already formatted SSE chunks.
+fn sse_response<S>(stream: S) -> Response
 where
-    R: Stream<Item = String> + Send + 'o,
-    'r: 'o,
+    S: Stream<Item = String> + Send + 'static,
 {
-    fn respond_to(self, req: &'r Request<'_>) -> rocket::response::Result<'o> {
-        match self {
-            Response::Stream(stream) => stream.respond_to(req),
-            Response::Text(text) => text.respond_to(req),
-            Response::Error(e) => {
-                let mut res = rocket::response::Response::new();
-                res.set_status(Status::InternalServerError);
-                res.set_header(ContentType::JSON);
-                res.set_sized_body(e.len(), std::io::Cursor::new(e));
-                Ok(res)
-            }
-        }
-    }
+    let body = Body::from_stream(stream.map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))));
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(body)
+        .expect("failed to build streaming response")
 }
 
-#[post("/completions", data = "<req>")]
+fn stored_model() -> Option<Arc<RwLock<StoredModel>>> {
+    MODEL.get().cloned()
+}
+
 pub(crate) async fn chat(
-    req: Json<ChatCompletionParameters>,
-) -> (ContentType, Response<impl Stream<Item = String> + Send>) {
+    payload: Result<Json<ChatCompletionParameters>, JsonRejection>,
+) -> Response {
+    let req = match payload {
+        Ok(Json(req)) => req,
+        Err(rejection) => {
+            return error::from_json_rejection(rejection).into_response();
+        }
+    };
+
     match req.stream {
         Some(false) => {
             let response = {
-                let model_ref = MODEL
-                    .get()
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("model not init"))
-                    .unwrap();
+                let Some(model_ref) = stored_model() else {
+                    return error::model_not_loaded().into_response();
+                };
                 let mut guard = model_ref.write().await;
-                guard.instance.generate(req.into_inner())
+                guard.instance.generate(req)
             };
             match response {
-                Ok(res) => {
-                    let response_str = serde_json::to_string(&res).unwrap();
-                    (ContentType::Text, Response::Text(response_str))
-                }
-                Err(e) => (ContentType::Text, Response::Error(e.to_string())),
+                Ok(res) => (
+                    StatusCode::OK,
+                    [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                    serde_json::to_string(&res).unwrap_or_else(|e| e.to_string()),
+                )
+                    .into_response(),
+                Err(e) => error::internal_error(e.to_string()).into_response(),
             }
         }
         _ => {
-            let text_stream = TextStream! {
-                let model_ref = MODEL.get().cloned().ok_or_else(|| anyhow::anyhow!("model not init")).unwrap();
+            let text_stream = async_stream::stream! {
+                let Some(model_ref) = MODEL.get().cloned() else {
+                    yield "event: error\ndata: model not init\n\n".to_string();
+                    return;
+                };
                 let mut guard = model_ref.write().await;
-                let stream_result = guard.instance.generate_stream(req.into_inner());
+                let stream_result = guard.instance.generate_stream(req);
                 match stream_result {
                     Ok(stream) => {
                         let mut stream = pin!(stream);
@@ -147,54 +149,68 @@ pub(crate) async fn chat(
                             }
                         }
                         yield "data: [DONE]\n\n".to_string();
-                    },
+                    }
                     Err(e) => {
                         yield format!("event: error\ndata: {}\n\n", e.to_string());
                     }
                 }
             };
-            (ContentType::EventStream, Response::Stream(text_stream))
+            sse_response(text_stream)
         }
     }
 }
 
-#[post("/remove_background", data = "<req>")]
-pub(crate) async fn remove_background(req: Json<ChatCompletionParameters>) -> (Status, String) {
+pub(crate) async fn remove_background(
+    payload: Result<Json<ChatCompletionParameters>, JsonRejection>,
+) -> Response {
+    let req = match payload {
+        Ok(Json(req)) => req,
+        Err(rejection) => {
+            return error::from_json_rejection(rejection).into_response();
+        }
+    };
     let response = {
-        let model_ref = MODEL
-            .get()
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("model not init"))
-            .unwrap();
+        let Some(model_ref) = stored_model() else {
+            return error::model_not_loaded().into_response();
+        };
         let mut guard = model_ref.write().await;
-        guard.instance.generate(req.into_inner())
+        guard.instance.generate(req)
     };
     match response {
-        Ok(res) => {
-            let response_str = serde_json::to_string(&res).unwrap();
-            (Status::Ok, response_str)
-        }
-        Err(e) => (Status::InternalServerError, e.to_string()),
+        Ok(res) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            serde_json::to_string(&res).unwrap(),
+        )
+            .into_response(),
+        Err(e) => error::internal_error(e.to_string()).into_response(),
     }
 }
 
-#[post("/speech", data = "<req>")]
-pub(crate) async fn speech(req: Json<ChatCompletionParameters>) -> (Status, String) {
+pub(crate) async fn speech(
+    payload: Result<Json<ChatCompletionParameters>, JsonRejection>,
+) -> Response {
+    let req = match payload {
+        Ok(Json(req)) => req,
+        Err(rejection) => {
+            return error::from_json_rejection(rejection).into_response();
+        }
+    };
     let response = {
-        let model_ref = MODEL
-            .get()
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("model not init"))
-            .unwrap();
+        let Some(model_ref) = stored_model() else {
+            return error::model_not_loaded().into_response();
+        };
         let mut guard = model_ref.write().await;
-        guard.instance.generate(req.into_inner())
+        guard.instance.generate(req)
     };
     match response {
-        Ok(res) => {
-            let response_str = serde_json::to_string(&res).unwrap();
-            (Status::Ok, response_str)
-        }
-        Err(e) => (Status::InternalServerError, e.to_string()),
+        Ok(res) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            serde_json::to_string(&res).unwrap(),
+        )
+            .into_response(),
+        Err(e) => error::internal_error(e.to_string()).into_response(),
     }
 }
 
@@ -207,23 +223,19 @@ pub(crate) struct HealthResponse {
     error: Option<String>,
 }
 
-#[get("/health")]
-pub(crate) async fn health() -> (Status, (ContentType, Json<HealthResponse>)) {
+pub(crate) async fn health() -> (StatusCode, Json<HealthResponse>) {
     if MODEL.get().is_some() {
         let response = HealthResponse {
             status: "ok".to_string(),
             error: None,
         };
-        (Status::Ok, (ContentType::JSON, Json(response)))
+        (StatusCode::OK, Json(response))
     } else {
         let response = HealthResponse {
             status: "unhealthy".to_string(),
             error: Some("model not initialized".to_string()),
         };
-        (
-            Status::ServiceUnavailable,
-            (ContentType::JSON, Json(response)),
-        )
+        (StatusCode::SERVICE_UNAVAILABLE, Json(response))
     }
 }
 
@@ -245,13 +257,7 @@ struct ModelsListResponse {
     data: Vec<ModelObject>,
 }
 
-#[derive(Serialize)]
-struct ErrorResponse {
-    error: String,
-}
-
-#[get("/models")]
-pub(crate) async fn models() -> (Status, (ContentType, Json<serde_json::Value>)) {
+pub(crate) async fn models() -> (StatusCode, Json<serde_json::Value>) {
     if let Some(model_ref) = MODEL.get() {
         let guard = model_ref.read().await;
         let which_model = guard.which_model;
@@ -269,24 +275,63 @@ pub(crate) async fn models() -> (Status, (ContentType, Json<serde_json::Value>))
             data: vec![model_obj],
         };
         (
-            Status::Ok,
-            (
-                ContentType::JSON,
-                Json(serde_json::to_value(response).unwrap()),
-            ),
+            StatusCode::OK,
+            Json(serde_json::to_value(response).unwrap()),
         )
     } else {
-        let response = ErrorResponse {
-            error: "model not initialized".to_string(),
-        };
-        (
-            Status::ServiceUnavailable,
-            (
-                ContentType::JSON,
-                Json(serde_json::to_value(response).unwrap()),
-            ),
-        )
+        error::model_not_loaded()
     }
+}
+
+// Shutdown endpoint
+#[derive(Serialize)]
+struct ShutdownResponse {
+    message: String,
+}
+
+pub(crate) async fn shutdown(
+    State(shutdown_flag): State<Arc<AtomicBool>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+) -> Response {
+    // Only loopback clients may shut the service down unless explicitly enabled
+    let allow_remote = ALLOW_REMOTE_SHUTDOWN.get().copied().unwrap_or(false);
+    let from_loopback = peer.ip().is_loopback();
+
+    // Log the shutdown request
+    eprintln!("[SHUTDOWN] Shutdown requested from {peer} (remote_allowed: {allow_remote})");
+
+    if !from_loopback && !allow_remote {
+        return error::api_error(
+            StatusCode::FORBIDDEN,
+            "invalid_request_error",
+            "Remote shutdown not allowed. Use --allow-remote-shutdown flag to enable (not recommended).",
+            None,
+            Some("remote_shutdown_forbidden"),
+        )
+        .into_response();
+    }
+
+    shutdown_flag.store(true, Ordering::SeqCst);
+
+    // Cleanup PID file in a background task
+    if let Some(&port) = SERVER_PORT.get() {
+        let _ = cleanup_pid_file(port);
+    }
+
+    // Schedule shutdown after a short delay to allow response to be sent
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        std::process::exit(0);
+    });
+
+    let response = ShutdownResponse {
+        message: "Shutting down...".to_string(),
+    };
+    (
+        StatusCode::OK,
+        Json(serde_json::to_value(response).unwrap()),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -296,9 +341,8 @@ mod tests {
     // Test health endpoint when model is not initialized
     #[tokio::test]
     async fn test_health_endpoint_uninitialized() {
-        let (status, (content_type, response)) = health().await;
-        assert_eq!(status, Status::ServiceUnavailable);
-        assert_eq!(content_type, ContentType::JSON);
+        let (status, response) = health().await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(response.status, "unhealthy");
         assert_eq!(response.error, Some("model not initialized".to_string()));
     }
@@ -316,24 +360,29 @@ mod tests {
     // Test models endpoint when model is not initialized
     #[tokio::test]
     async fn test_models_endpoint_uninitialized() {
-        let (status, (content_type, response)) = models().await;
-        assert_eq!(status, Status::ServiceUnavailable);
-        assert_eq!(content_type, ContentType::JSON);
-        let error = response.get("error").and_then(|v| v.as_str());
-        assert_eq!(error, Some("model not initialized"));
+        let (status, response) = models().await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.0["error"]["message"], "Model not initialized");
+        assert_eq!(response.0["error"]["type"], "service_unavailable");
+        assert_eq!(response.0["error"]["code"], "model_not_loaded");
     }
 
     // Test model type classification
     #[test]
     fn test_get_model_type_llm() {
         assert_eq!(WhichModel::Qwen3_0_6B.model_type(), "llm");
-        assert_eq!(WhichModel::Qwen3VL2B.model_type(), "llm");
         assert_eq!(WhichModel::MiniCPM4_0_5B.model_type(), "llm");
-        assert_eq!(WhichModel::Qwen2_5VL3B.model_type(), "llm");
-        assert_eq!(WhichModel::Qwen2_5VL7B.model_type(), "llm");
-        assert_eq!(WhichModel::Qwen3VL4B.model_type(), "llm");
-        assert_eq!(WhichModel::Qwen3VL8B.model_type(), "llm");
-        assert_eq!(WhichModel::Qwen3VL32B.model_type(), "llm");
+        assert_eq!(WhichModel::MiniCPM5_1B.model_type(), "llm");
+    }
+
+    #[test]
+    fn test_get_model_type_vlm() {
+        assert_eq!(WhichModel::Qwen3VL2B.model_type(), "vlm");
+        assert_eq!(WhichModel::Qwen2_5VL3B.model_type(), "vlm");
+        assert_eq!(WhichModel::Qwen2_5VL7B.model_type(), "vlm");
+        assert_eq!(WhichModel::Qwen3VL4B.model_type(), "vlm");
+        assert_eq!(WhichModel::Qwen3VL8B.model_type(), "vlm");
+        assert_eq!(WhichModel::Qwen3VL32B.model_type(), "vlm");
     }
 
     #[test]
@@ -358,56 +407,25 @@ mod tests {
 
     #[test]
     fn test_get_model_type_tts() {
-        assert_eq!(WhichModel::VoxCPM.model_type(), "image");
-        assert_eq!(WhichModel::VoxCPM1_5.model_type(), "image");
-    }
-}
-
-// Shutdown endpoint
-#[derive(Serialize)]
-struct ShutdownResponse {
-    message: String,
-}
-
-#[post("/shutdown")]
-pub(crate) async fn shutdown(
-    shutdown_flag: &State<Arc<AtomicBool>>,
-) -> (Status, (ContentType, Json<serde_json::Value>)) {
-    // Check if remote shutdown is allowed
-    let allow_remote = ALLOW_REMOTE_SHUTDOWN.get().copied().unwrap_or(false);
-
-    // Log the shutdown request
-    eprintln!(
-        "[SHUTDOWN] Shutdown requested (remote_allowed: {})",
-        allow_remote
-    );
-
-    // Note: Rocket 0.5 doesn't provide easy access to client IP in request guards
-    // For proper IP-based filtering, you would need to use custom request guards
-    // or middleware. For now, we rely on the --allow-remote-shutdown flag.
-
-    shutdown_flag.store(true, Ordering::SeqCst);
-
-    // Cleanup PID file in a background task
-    if let Some(&port) = SERVER_PORT.get() {
-        let _ = cleanup_pid_file(port);
+        assert_eq!(WhichModel::VoxCPM.model_type(), "tts");
+        assert_eq!(WhichModel::VoxCPM1_5.model_type(), "tts");
+        assert_eq!(WhichModel::VoxCPM2.model_type(), "tts");
     }
 
-    // Schedule shutdown after a short delay to allow response to be sent
-    let _flag = shutdown_flag.inner().clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        std::process::exit(0);
-    });
+    // Remote clients must not be able to stop the service unless explicitly allowed.
+    #[tokio::test]
+    async fn test_remote_shutdown_forbidden() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 7], 45678)));
+        let response = shutdown(State(flag.clone()), peer).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        // The shutdown flag must stay untouched on a rejected request.
+        assert!(!flag.load(Ordering::SeqCst));
 
-    let response = ShutdownResponse {
-        message: "Shutting down...".to_string(),
-    };
-    (
-        Status::Ok,
-        (
-            ContentType::JSON,
-            Json(serde_json::to_value(response).unwrap()),
-        ),
-    )
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["code"], "remote_shutdown_forbidden");
+    }
 }

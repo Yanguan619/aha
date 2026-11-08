@@ -1,9 +1,9 @@
-use rocket::{http::Status, post, serde::json::Json};
+use axum::{Json, extract::rejection::JsonRejection, http::StatusCode};
 use serde_json::Value;
 
 use crate::{
     params::embedding::{EmbeddingData, EmbeddingRequest, EmbeddingResponse},
-    server::api::MODEL,
+    server::{api::MODEL, error},
 };
 
 fn parse_embedding_input(input: &Value) -> anyhow::Result<Vec<String>> {
@@ -28,34 +28,31 @@ fn parse_embedding_input(input: &Value) -> anyhow::Result<Vec<String>> {
     }
 }
 
-#[post("/embeddings", data = "<req>")]
-pub(crate) async fn embeddings(req: Json<EmbeddingRequest>) -> (Status, Json<Value>) {
+pub(crate) async fn embeddings(
+    payload: Result<Json<EmbeddingRequest>, JsonRejection>,
+) -> (StatusCode, Json<Value>) {
+    let req = match payload {
+        Ok(Json(req)) => req,
+        Err(rejection) => {
+            return error::from_json_rejection(rejection);
+        }
+    };
+
     let texts = match parse_embedding_input(&req.input) {
         Ok(v) => v,
         Err(e) => {
-            return (
-                Status::BadRequest,
-                Json(serde_json::json!({ "error": e.to_string() })),
-            );
+            return error::invalid_request(e.to_string(), Some("input"), Some("invalid_input"));
         }
     };
     let model_ref = match MODEL.get().cloned() {
         Some(v) => v,
-        None => {
-            return (
-                Status::ServiceUnavailable,
-                Json(serde_json::json!({ "error": "model not init" })),
-            );
-        }
+        None => return error::model_not_loaded(),
     };
     let mut guard = model_ref.write().await;
     let embeddings = match guard.instance.embedding(&texts) {
         Ok(v) => v,
         Err(e) => {
-            return (
-                Status::BadRequest,
-                Json(serde_json::json!({ "error": e.to_string() })),
-            );
+            return error::invalid_request(e.to_string(), Some("input"), Some("embedding_failed"));
         }
     };
     let model_name = guard.which_model.as_string();
@@ -73,5 +70,8 @@ pub(crate) async fn embeddings(req: Json<EmbeddingRequest>) -> (Status, Json<Val
         data,
         model: model_name,
     };
-    (Status::Ok, Json(serde_json::to_value(response).unwrap()))
+    (
+        StatusCode::OK,
+        Json(serde_json::to_value(response).unwrap()),
+    )
 }

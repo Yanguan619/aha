@@ -3,7 +3,7 @@ use std::{pin::pin, time::Instant};
 use aha::models::{GenerateModel, minicpm4::generate::MiniCPM4GenerateModel};
 use aha::params::chat::ChatCompletionParameters;
 use anyhow::Result;
-use rocket::futures::StreamExt;
+use futures_util::StreamExt;
 
 #[test]
 fn minicpm_generate() -> Result<()> {

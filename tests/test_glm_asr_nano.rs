@@ -3,7 +3,7 @@ use std::{pin::pin, time::Instant};
 use aha::models::{GenerateModel, glm_asr_nano::generate::GlmAsrNanoGenerateModel};
 use aha::params::chat::ChatCompletionParameters;
 use anyhow::Result;
-use rocket::futures::StreamExt;
+use futures_util::StreamExt;
 
 #[test]
 fn glm_asr_nano_generate() -> Result<()> {

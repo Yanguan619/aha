@@ -8,10 +8,10 @@ use crate::{
     utils::tensor_utils::masked_scatter_dim0,
 };
 use anyhow::Result;
+use async_stream::stream;
 use candle_core::{D, DType, Device, IndexOp, Tensor};
 use candle_nn::{Linear, Module, VarBuilder, linear, linear_no_bias};
-use rocket::async_stream::stream;
-use rocket::futures::Stream;
+use futures_util::Stream;
 
 pub struct VoxCPMModelRefact {
     config: VoxCPMConfig,

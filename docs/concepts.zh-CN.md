@@ -317,7 +317,7 @@ cargo build --features cuda,flash-attn
      │ HTTP 请求
      ▼
 ┌──────────────────────────────────────────────────────────┐
-│  Rocket HTTP 服务器                                      │
+│  Axum   HTTP 服务器                                      │
 │  - 将请求路由到端点                                      │
 │  - 解析请求体                                            │
 │  - 提取参数                                              │

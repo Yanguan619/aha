@@ -7,9 +7,9 @@ use anyhow::Result;
 use base64::{Engine, prelude::BASE64_STANDARD};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
+use futures_util::{Stream, stream};
 use image::RgbaImage;
 use rayon::prelude::*;
-use rocket::futures::{Stream, stream};
 
 use crate::{
     models::{GenerateModel, rmbg2_0::model::BiRefNet},

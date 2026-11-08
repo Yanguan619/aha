@@ -11,7 +11,7 @@ use crate::{
 use anyhow::{Result, anyhow};
 use candle_core::{DType, Device, quantized::gguf_file};
 use candle_nn::VarBuilder;
-use rocket::futures::Stream;
+use futures_util::Stream;
 
 use crate::{
     chat_template::ChatTemplate,

@@ -3,7 +3,7 @@ use std::{pin::pin, time::Instant};
 use aha::models::{GenerateModel, fun_asr_nano::generate::FunAsrNanoGenerateModel};
 use aha::params::chat::ChatCompletionParameters;
 use anyhow::Result;
-use rocket::futures::StreamExt;
+use futures_util::StreamExt;
 #[test]
 fn fun_asr_nano_generate() -> Result<()> {
     // RUST_BACKTRACE=1 cargo test -F cuda --test test_fun_asr_nano fun_asr_nano_generate -r -- --nocapture

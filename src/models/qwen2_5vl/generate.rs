@@ -8,10 +8,10 @@ use crate::utils::response_utils::{
     build_chunk_response_with_usage, build_completion_response_with_time,
 };
 use anyhow::{Result, anyhow};
+use async_stream::stream;
 use candle_core::{D, DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
-use rocket::async_stream::stream;
-use rocket::futures::Stream;
+use futures_util::Stream;
 
 use crate::models::qwen2_5vl::config::Qwen2_5VLConfig;
 use crate::utils::{

@@ -1,18 +1,74 @@
 // OpenAI-compatible ASR (Automatic Speech Recognition) API endpoint
 // Implements POST /audio/transcriptions and /v1/audio/transcriptions
 
+use std::path::{Path, PathBuf};
+
 use aha::models::GenerateModel;
 use aha::params::chat::{
     AudioUrlType, ChatCompletionParameters, ChatMessage, ChatMessageAudioContentPart,
     ChatMessageContent, ChatMessageContentPart,
 };
 use aha::utils::{clean_asr_response, map_language_code};
-use rocket::http::Status;
-use rocket::serde::json::Json;
-use rocket::{form::Form, post};
+use axum::{
+    Json,
+    extract::{Multipart, multipart::MultipartRejection},
+    http::StatusCode,
+};
+use uuid::Uuid;
 
-use crate::params::asr::{ErrorDetail, ErrorResponse, TranscriptionRequest, TranscriptionResponse};
+use crate::params::asr::{TranscriptionRequest, TranscriptionResponse};
 use crate::server::api::MODEL;
+use crate::server::error;
+
+/// Temporary audio file written from the multipart body.
+///
+/// The model consumes audio through a `file://` URL, so the uploaded bytes have to
+/// be materialized on disk. The file is removed when the guard is dropped.
+struct TempAudioFile {
+    path: PathBuf,
+}
+
+impl TempAudioFile {
+    /// Create a unique path in the system temp directory, keeping the original extension
+    /// so the audio loader can sniff the container format.
+    fn new_path(filename: Option<&str>) -> PathBuf {
+        let extension = filename
+            .and_then(|name| Path::new(name).extension())
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("wav");
+        std::env::temp_dir().join(format!("aha_asr_{}.{}", Uuid::new_v4(), extension))
+    }
+
+    /// Stream a multipart field into the temp file chunk by chunk.
+    ///
+    /// Avoids buffering the whole upload in memory (audio files can reach 100 MiB).
+    async fn write_stream(
+        field: &mut axum::extract::multipart::Field<'_>,
+        filename: Option<&str>,
+    ) -> std::io::Result<Self> {
+        use tokio::io::AsyncWriteExt;
+
+        let path = Self::new_path(filename);
+        let mut file = tokio::fs::File::create(&path).await?;
+        while let Some(chunk) = field.chunk().await.map_err(std::io::Error::other)? {
+            file.write_all(&chunk).await?;
+        }
+        file.flush().await?;
+        // Close the handle before the model reads the file back.
+        drop(file);
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempAudioFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
 
 /// Handle audio transcription requests
 ///
@@ -29,41 +85,82 @@ use crate::server::api::MODEL;
 ///
 /// # Returns
 /// JSON response with format: `{"text": "transcribed text"}`
-#[post("/transcriptions", data = "<req>")]
 pub(crate) async fn transcriptions(
-    req: Form<TranscriptionRequest<'_>>,
-) -> (Status, Json<serde_json::Value>) {
-    // Validate response_format (only JSON and text supported)
-    #[allow(clippy::collapsible_if)]
-    if let Some(ref format) = req.response_format {
-        if format != "json" && format != "text" {
-            return error_response(
-                Status::BadRequest,
-                "invalid_request_error",
-                "Only 'json' and 'text' response formats are supported",
-                Some("unsupported_format".to_string()),
-            );
-        }
-    }
-
-    // Get the audio file path
-    let file_path = match req.file.path() {
-        Some(path) => path,
-        None => {
-            return error_response(
-                Status::BadRequest,
-                "invalid_request_error",
-                "Audio file is required",
-                Some("missing_file".to_string()),
-            );
+    multipart: Result<Multipart, MultipartRejection>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let mut multipart = match multipart {
+        Ok(multipart) => multipart,
+        Err(rejection) => {
+            return error::from_multipart_rejection(rejection);
         }
     };
 
+    let mut params = TranscriptionRequest::default();
+    let mut audio_file: Option<TempAudioFile> = None;
+
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(e) => {
+                return error::invalid_request(
+                    format!("Failed to read multipart body: {e}"),
+                    None,
+                    Some("invalid_multipart"),
+                );
+            }
+        };
+
+        let name = field.name().unwrap_or_default().to_string();
+        let mut field = field;
+        match name.as_str() {
+            "file" => {
+                let filename = field.file_name().map(|name| name.to_string());
+                match TempAudioFile::write_stream(&mut field, filename.as_deref()).await {
+                    Ok(file) => audio_file = Some(file),
+                    Err(e) => {
+                        return error::internal_error(format!("Failed to store audio file: {e}"));
+                    }
+                }
+            }
+            "model" => params.model = field.text().await.ok(),
+            "language" => params.language = field.text().await.ok(),
+            "prompt" => params.prompt = field.text().await.ok(),
+            "response_format" => params.response_format = field.text().await.ok(),
+            "temperature" => {
+                params.temperature = field.text().await.ok().and_then(|v| v.parse().ok());
+            }
+            // Ignore unknown fields for forward compatibility
+            _ => {}
+        }
+    }
+
+    // Validate response_format (only JSON and text supported)
+    if let Some(ref format) = params.response_format
+        && format != "json"
+        && format != "text"
+    {
+        return error::invalid_request(
+            "Only 'json' and 'text' response formats are supported",
+            Some("response_format"),
+            Some("unsupported_format"),
+        );
+    }
+
+    // Get the audio file path
+    let Some(audio_file) = audio_file else {
+        return error::invalid_request(
+            "Audio file is required",
+            Some("file"),
+            Some("missing_file"),
+        );
+    };
+
     // Build file:// URL for the model
-    let file_url = format!("file://{}", file_path.display());
+    let file_url = format!("file://{}", audio_file.path().display());
 
     // Map language code to full language name
-    let language_name = req
+    let language_name = params
         .language
         .as_ref()
         .and_then(|code| map_language_code(code));
@@ -74,13 +171,13 @@ pub(crate) async fn transcriptions(
         audio_url: AudioUrlType { url: file_url },
     });
 
-    let params = ChatCompletionParameters {
+    let request = ChatCompletionParameters {
         messages: vec![ChatMessage::User {
             content: ChatMessageContent::ContentPart(vec![audio_part]),
             name: None,
         }],
-        model: req.model.clone().unwrap_or_else(|| "asr".to_string()),
-        temperature: req.temperature.or(Some(0.0)),
+        model: params.model.clone().unwrap_or_else(|| "asr".to_string()),
+        temperature: params.temperature.or(Some(0.0)),
         max_tokens: None,
         stream: None,
         top_p: None,
@@ -100,21 +197,13 @@ pub(crate) async fn transcriptions(
     };
 
     // Get the model and generate transcription
-    let model_ref = match MODEL.get() {
-        Some(m) => m,
-        None => {
-            return error_response(
-                Status::ServiceUnavailable,
-                "service_unavailable",
-                "Model not initialized",
-                Some("model_not_loaded".to_string()),
-            );
-        }
+    let Some(model_ref) = MODEL.get() else {
+        return error::model_not_loaded();
     };
 
     let response = {
         let mut guard = model_ref.write().await;
-        guard.instance.generate(params)
+        guard.instance.generate(request)
     };
 
     match response {
@@ -144,67 +233,47 @@ pub(crate) async fn transcriptions(
             // Return OpenAI-compatible transcription response
             let transcription = TranscriptionResponse { text: cleaned_text };
             (
-                Status::Ok,
+                StatusCode::OK,
                 Json(serde_json::to_value(transcription).unwrap()),
             )
         }
         Err(e) => {
             // Determine appropriate error status based on error message
             let error_msg = e.to_string();
-            let (status, error_type, code) =
-                if error_msg.contains("audio") || error_msg.contains("decode") {
-                    (
-                        Status::BadRequest,
-                        "invalid_request_error",
-                        Some("audio_decode_error".to_string()),
-                    )
-                } else {
-                    (
-                        Status::InternalServerError,
-                        "server_error",
-                        Some("inference_error".to_string()),
-                    )
-                };
-
-            error_response(status, error_type, &error_msg, code)
+            if error_msg.contains("audio") || error_msg.contains("decode") {
+                error::api_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request_error",
+                    error_msg,
+                    Some("file"),
+                    Some("audio_decode_error"),
+                )
+            } else {
+                error::api_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "server_error",
+                    error_msg,
+                    None,
+                    Some("inference_error"),
+                )
+            }
         }
     }
-}
-
-/// Helper function to create error responses in OpenAI format
-fn error_response(
-    status: Status,
-    error_type: &str,
-    message: &str,
-    code: Option<String>,
-) -> (Status, Json<serde_json::Value>) {
-    let error_response = ErrorResponse {
-        error: ErrorDetail {
-            message: message.to_string(),
-            error_type: error_type.to_string(),
-            code,
-        },
-    };
-    (status, Json(serde_json::to_value(error_response).unwrap()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
-    fn test_error_response_serialization() {
-        let (status, json) = error_response(
-            Status::BadRequest,
-            "invalid_request_error",
-            "Test error message",
-            Some("test_code".to_string()),
+    fn test_transcription_response_serialization() {
+        let response = TranscriptionResponse {
+            text: "hello".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            json!({"text": "hello"})
         );
-
-        assert_eq!(status, Status::BadRequest);
-        let parsed: serde_json::Value = serde_json::from_str(&json.to_string()).unwrap();
-        assert_eq!(parsed["error"]["message"], "Test error message");
-        assert_eq!(parsed["error"]["type"], "invalid_request_error");
-        assert_eq!(parsed["error"]["code"], "test_code");
     }
 }
