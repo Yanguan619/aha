@@ -97,6 +97,9 @@ pub enum WhichModel {
     #[cfg(feature = "laya")]
     #[value(name = "convaiinnovations/laya-multilingual")]
     Laya,
+    #[cfg(feature = "vla")]
+    #[value(name = "OpenBMB/TurboVLA")]
+    TurboVla,
 }
 
 impl WhichModel {
@@ -135,6 +138,12 @@ impl WhichModel {
     #[cfg(feature = "laya")]
     pub fn is_laya_model(&self) -> bool {
         matches!(self, WhichModel::Laya)
+    }
+
+    /// TurboVLA（视觉-语言-动作）模型。
+    #[cfg(feature = "vla")]
+    pub fn is_vla_model(&self) -> bool {
+        matches!(self, WhichModel::TurboVla)
     }
 
     /// 桌宠委托的三个模型（SenseVoice / Kokoro / Laya）。
@@ -247,6 +256,8 @@ impl WhichModel {
             WhichModel::Kokoro => "tts",
             #[cfg(feature = "laya")]
             WhichModel::Laya => "system1",
+            #[cfg(feature = "vla")]
+            WhichModel::TurboVla => "vla",
         }
     }
 }

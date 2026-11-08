@@ -21,6 +21,8 @@ pub(crate) mod embedding;
 pub(crate) mod error;
 pub(crate) mod process;
 pub(crate) mod reranker;
+#[cfg(feature = "vla")]
+pub(crate) mod vla;
 
 /// Default request body limit (5 MiB), same as the previous rocket configuration.
 const DEFAULT_BODY_LIMIT: usize = 5 * 1024 * 1024;
@@ -125,6 +127,8 @@ fn build_router(shutdown_flag: Arc<AtomicBool>) -> Router {
         .route("/v1/tts/stream", post(deskpet::handle_tts_stream));
     #[cfg(feature = "laya")]
     let app = app.route("/v1/decisions", post(deskpet::handle_route));
+    #[cfg(feature = "vla")]
+    let app = app.route("/v1/actions", post(vla::handle_actions));
 
     app
         // Unknown routes and wrong methods also answer with the OpenAI error envelope

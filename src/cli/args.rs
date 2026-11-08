@@ -229,6 +229,9 @@ pub(crate) struct MultiArgs {
     /// Laya 模型目录（不给则先找 HF 缓存，再下载）
     #[arg(long)]
     pub laya_path: Option<String>,
+    /// TurboVLA 模型目录（启用 VLA 角色；先用 tools/vla/convert_turbovla.py 转换）
+    #[arg(long)]
+    pub vla: Option<String>,
 
     #[command(flatten)]
     pub server_common: ServerCommonArgs,

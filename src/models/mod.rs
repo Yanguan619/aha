@@ -34,6 +34,8 @@ pub mod sense_voice;
 pub mod voxcpm;
 pub mod voxcpm_refact;
 pub mod w2v_bert_2_0;
+#[cfg(feature = "vla")]
+pub mod turbovla;
 // pub mod sam3;
 pub mod fire_red_vad;
 pub mod gpt2;
@@ -107,6 +109,8 @@ pub enum ModelInstance<'a> {
     Kokoro(crate::models::kokoro::KokoroTtsModel),
     #[cfg(feature = "laya")]
     Laya(crate::models::laya::LayaRouteModel),
+    #[cfg(feature = "vla")]
+    Vla(crate::models::turbovla::TurboVlaModel),
 }
 
 impl<'a> GenerateModel for ModelInstance<'a> {
@@ -146,7 +150,11 @@ impl<'a> GenerateModel for ModelInstance<'a> {
             ModelInstance::Kokoro(model) => model.generate(mes),
             #[cfg(feature = "laya")]
             ModelInstance::Laya(_) => Err(anyhow!(
-                "laya is a routing model; use POST /route instead of chat completions"
+                "laya is a routing model; use POST /v1/decisions instead of chat completions"
+            )),
+            #[cfg(feature = "vla")]
+            ModelInstance::Vla(_) => Err(anyhow!(
+                "vla is an action model; use POST /v1/actions instead of chat completions"
             )),
         }
     }
@@ -196,14 +204,18 @@ impl<'a> GenerateModel for ModelInstance<'a> {
             ModelInstance::Kokoro(model) => model.generate_stream(mes),
             #[cfg(feature = "laya")]
             ModelInstance::Laya(_) => Err(anyhow!(
-                "laya is a routing model; use POST /route instead of chat completions"
+                "laya is a routing model; use POST /v1/decisions instead of chat completions"
+            )),
+            #[cfg(feature = "vla")]
+            ModelInstance::Vla(_) => Err(anyhow!(
+                "vla is an action model; use POST /v1/actions instead of chat completions"
             )),
         }
     }
 }
 
 impl<'a> ModelInstance<'a> {
-    /// 取 Laya 路由模型（只有加载了 laya 时才有）。`/route` 端点用它。
+    /// 取 Laya 路由模型（只有加载了 laya 时才有）。`/v1/decisions` 端点用它。
     #[cfg(feature = "laya")]
     pub fn route_model(&self) -> Option<&crate::models::laya::LayaRouteModel> {
         match self {
@@ -212,7 +224,16 @@ impl<'a> ModelInstance<'a> {
         }
     }
 
-    /// 取 SenseVoice（只有加载了 sense-voice 时才有）。`/asr` 端点用它。
+    /// 取 TurboVLA 动作模型（只有加载了 vla 时才有）。`/v1/actions` 端点用它。
+    #[cfg(feature = "vla")]
+    pub fn vla_model(&self) -> Option<&crate::models::turbovla::TurboVlaModel> {
+        match self {
+            ModelInstance::Vla(model) => Some(model),
+            _ => None,
+        }
+    }
+
+    /// 取 SenseVoice（只有加载了 sense-voice 时才有）。`/v1/asr` 端点用它。
     #[cfg(feature = "sherpa")]
     pub fn asr_model(&self) -> Option<&crate::models::sense_voice::SenseVoiceModel> {
         match self {
@@ -221,7 +242,7 @@ impl<'a> ModelInstance<'a> {
         }
     }
 
-    /// 取 Kokoro（只有加载了 kokoro 时才有）。`/tts` 端点用它。
+    /// 取 Kokoro（只有加载了 kokoro 时才有）。`/v1/tts` 端点用它。
     #[cfg(feature = "sherpa")]
     pub fn tts_model(&self) -> Option<&crate::models::kokoro::KokoroTtsModel> {
         match self {
@@ -392,6 +413,16 @@ pub fn load_model<'a>(
                 0,
             )?;
             ModelInstance::Laya(model)
+        }
+        #[cfg(feature = "vla")]
+        WhichModel::TurboVla => {
+            let dev = device.cloned().unwrap_or(Device::Cpu);
+            let model = crate::models::turbovla::TurboVlaModel::load(
+                path,
+                &dev,
+                dtype.unwrap_or(DType::F32),
+            )?;
+            ModelInstance::Vla(model)
         }
         _ => {
             let model_id = model_type.as_string();

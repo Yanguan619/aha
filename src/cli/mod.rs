@@ -232,6 +232,7 @@ pub(crate) async fn run_multi(args: MultiArgs) -> anyhow::Result<()> {
         tts,
         laya,
         laya_path,
+        vla,
         server_common,
         pet,
     } = args;
@@ -270,6 +271,15 @@ pub(crate) async fn run_multi(args: MultiArgs) -> anyhow::Result<()> {
     #[cfg(not(feature = "laya"))]
     if laya || laya_path.is_some() {
         return Err(anyhow!("这个二进制没编 laya 特性，不能启用 laya 角色"));
+    }
+
+    #[cfg(feature = "vla")]
+    if let Some(dir) = vla.as_deref() {
+        specs.push(ModelSpec::new("vla", WhichModel::TurboVla, dir));
+    }
+    #[cfg(not(feature = "vla"))]
+    if vla.is_some() {
+        return Err(anyhow!("这个二进制没编 vla 特性，不能启用 vla 角色"));
     }
 
     if specs.is_empty() {
@@ -497,6 +507,12 @@ pub(crate) fn run_run(args: RunArgs) -> anyhow::Result<()> {
         WhichModel::Laya => {
             return Err(anyhow!(
                 "laya 没有 `run` 子命令；启动服务请用 `aha serv --model convaiinnovations/laya-multilingual --weight-path <dir>`"
+            ));
+        }
+        #[cfg(feature = "vla")]
+        WhichModel::TurboVla => {
+            return Err(anyhow!(
+                "TurboVLA 没有 `run` 子命令；启动服务请用 `aha multi --vla <dir>` 或 `aha serv --model OpenBMB/TurboVLA --weight-path <dir>`"
             ));
         }
     }

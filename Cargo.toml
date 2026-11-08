@@ -79,6 +79,8 @@ sherpa = ["dep:sherpa-onnx", "sherpa-onnx/shared"]
 # Laya 决策模型：CPU 是默认编译特征；要 GPU 用 laya-cuda（sys1 的 cuda 是三选一互斥的）。
 laya = ["dep:sys1"]
 laya-cuda = ["dep:sys1", "sys1/cuda", "cuda"]
+# 可选：TurboVLA（视觉-语言-动作）。基于 candle 的 BERT/DINOv3 + 自写融合/动作头。
+vla = []
 # 可选：让 candle 的 CPU matmul 走 Intel MKL（比纯 Rust gemm 快，用来补 Laya CPU 的差距）。
 # 代价：intel-mkl-src 首次构建要下载 ~1GB MKL，静态链接会让 exe 明显变大。
 mkl = ["candle-core/mkl", "candle-nn/mkl"]

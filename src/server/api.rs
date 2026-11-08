@@ -187,6 +187,10 @@ fn role_of(model: WhichModel) -> Option<&'static str> {
     if model.is_laya_model() {
         return Some("system1");
     }
+    #[cfg(feature = "vla")]
+    if model.is_vla_model() {
+        return Some("vla");
+    }
     None
 }
 
