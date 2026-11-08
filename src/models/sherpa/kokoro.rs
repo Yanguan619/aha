@@ -201,6 +201,59 @@ impl KokoroTtsModel {
         get_audio_wav_u8(&tensor, sample_rate)
     }
 
+    /// 边合成边吐 **PCM16LE**（桌宠 `POST /tts/stream` 用）。
+    ///
+    /// 回调拿到的是**本次新增**的样本（sherpa 的 C 回调语义），返回 `false` 可以中止合成。
+    /// 和 [`Self::synthesize_wav`] 一样，合成器不是并发安全的，调用方必须串行。
+    pub fn synthesize_pcm_stream<F>(
+        &self,
+        text: &str,
+        voice: &str,
+        speed: f32,
+        mut emit: F,
+    ) -> Result<()>
+    where
+        F: FnMut(&[i16]) -> bool + 'static,
+    {
+        let text = truncate(text, MAX_TEXT);
+        if text.trim().is_empty() {
+            return Err(anyhow!("text 不能为空"));
+        }
+        let sid = if voice.trim().is_empty() {
+            self.default_sid
+        } else {
+            resolve_voice(voice).unwrap_or_else(|| {
+                tracing::warn!(voice, sid = self.default_sid, "认不出这个音色，用默认");
+                self.default_sid
+            })
+        };
+        let config = GenerationConfig {
+            sid,
+            speed: if speed > 0.0 { speed } else { 1.0 },
+            ..Default::default()
+        };
+
+        let mut buffer: Vec<i16> = Vec::new();
+        let callback = move |samples: &[f32], _progress: f32| -> bool {
+            buffer.clear();
+            buffer.extend(
+                samples
+                    .iter()
+                    .map(|sample| (sample.clamp(-1.0, 1.0) * 32767.0).round() as i16),
+            );
+            emit(&buffer)
+        };
+
+        let audio = self
+            .tts
+            .generate_with_config(&text, &config, Some(callback))
+            .ok_or_else(|| anyhow!("Kokoro failed to synthesize audio"))?;
+        if audio.samples().is_empty() {
+            return Err(anyhow!("合成结果为空"));
+        }
+        Ok(())
+    }
+
     /// 空跑一句，把第一帧的冷启动挪到"端口开着之前"。
     pub fn warmup(&self) {
         if let Err(error) = self.synthesize_wav("嗯", "", 1.0) {

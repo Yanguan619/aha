@@ -117,6 +117,8 @@ fn build_router(shutdown_flag: Arc<AtomicBool>) -> Router {
         // 桌宠契约：/asr（裸 PCM16LE）、/tts（WAV）、/route（Laya 决策）
         .route("/asr", post(deskpet::handle_asr))
         .route("/tts", post(deskpet::handle_tts))
+        // /tts/stream：边合成边吐 PCM16LE（首帧早于整句合成完）
+        .route("/tts/stream", post(deskpet::handle_tts_stream))
         .route("/route", post(deskpet::handle_route))
         // Unknown routes and wrong methods also answer with the OpenAI error envelope
         .fallback(error::fallback_not_found)

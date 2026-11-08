@@ -20,7 +20,7 @@ use std::time::Instant;
 
 use axum::{
     Json,
-    body::Bytes,
+    body::{Body, Bytes},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -78,7 +78,10 @@ pub async fn handle_asr(headers: HeaderMap, body: Bytes) -> Response {
         }
         Err(error) => {
             tracing::error!(%error, "ASR 识别失败");
-            error_json(StatusCode::INTERNAL_SERVER_ERROR, format!("识别失败：{error:#}"))
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("识别失败：{error:#}"),
+            )
         }
     }
 }
@@ -119,23 +122,30 @@ struct TtsRequest {
     speed: Option<f32>,
 }
 
-pub async fn handle_tts(body: Bytes) -> Response {
+/// 解析 `/tts` 和 `/tts/stream` 共用的请求体。
+fn parse_tts_request(body: &[u8]) -> Result<(String, String, f32), Response> {
     if body.is_empty() {
-        return error_json(StatusCode::BAD_REQUEST, "请求体是空的");
+        return Err(error_json(StatusCode::BAD_REQUEST, "请求体是空的"));
     }
     if body.len() > TTS_MAX_BODY {
-        return error_json(StatusCode::BAD_REQUEST, "请求体太大");
+        return Err(error_json(StatusCode::BAD_REQUEST, "请求体太大"));
     }
-    let request: TtsRequest = match serde_json::from_slice(&body) {
-        Ok(request) => request,
-        Err(error) => return error_json(StatusCode::BAD_REQUEST, format!("JSON 不对：{error}")),
-    };
+    let request: TtsRequest = serde_json::from_slice(body)
+        .map_err(|error| error_json(StatusCode::BAD_REQUEST, format!("JSON 不对：{error}")))?;
     let text = request.text.trim().to_owned();
     if text.is_empty() {
-        return error_json(StatusCode::BAD_REQUEST, "text 不能为空");
+        return Err(error_json(StatusCode::BAD_REQUEST, "text 不能为空"));
     }
     let voice = request.voice.unwrap_or_else(|| "zf_001".to_owned());
     let speed = request.speed.unwrap_or(1.0);
+    Ok((text, voice, speed))
+}
+
+pub async fn handle_tts(body: Bytes) -> Response {
+    let (text, voice, speed) = match parse_tts_request(&body) {
+        Ok(parsed) => parsed,
+        Err(response) => return response,
+    };
 
     let started = Instant::now();
     let Some(model_ref) = MODEL.get() else {
@@ -153,14 +163,91 @@ pub async fn handle_tts(body: Bytes) -> Response {
     };
     match model.synthesize_wav(&text, &voice, speed) {
         Ok(wav) => {
-            tracing::info!(bytes = wav.len(), took_ms = started.elapsed().as_millis(), "合成完成");
+            tracing::info!(
+                bytes = wav.len(),
+                took_ms = started.elapsed().as_millis(),
+                "合成完成"
+            );
             ([(header::CONTENT_TYPE, "audio/wav")], wav).into_response()
         }
         Err(error) => {
             tracing::error!(%error, "合成失败");
-            error_json(StatusCode::INTERNAL_SERVER_ERROR, format!("合成失败：{error:#}"))
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("合成失败：{error:#}"),
+            )
         }
     }
+}
+
+/// `POST /tts/stream` —— 边合成边吐裸 PCM16LE，桌宠 `mouth.speakStream` 用它边收边播。
+///
+/// 响应头：`X-Audio-Rate`（模型自报，Kokoro 是 24k）、`X-Audio-Channels: 1`。
+/// body：PCM16LE 小端，无 WAV 头。
+///
+/// 合成放在 `block_in_place` 里跑（sherpa 的 C 接口是阻塞的），每生成一帧就通过
+/// channel 推给响应流，所以首帧延迟 ≈ 一句的第一个分块，而不是整句合成完。
+pub async fn handle_tts_stream(body: Bytes) -> Response {
+    let (text, voice, speed) = match parse_tts_request(&body) {
+        Ok(parsed) => parsed,
+        Err(response) => return response,
+    };
+
+    let Some(model_ref) = MODEL.get().cloned() else {
+        return error_json(StatusCode::SERVICE_UNAVAILABLE, "模型没有初始化");
+    };
+
+    // 先读一把采样率：响应头必须在 body 开始流动之前定下来。
+    let sample_rate = {
+        let guard = model_ref.read().await;
+        let Some(model) = guard.instance.tts_model() else {
+            return error_json(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "当前模型 {} 不是 Kokoro，无法合成",
+                    guard.which_model.as_string()
+                ),
+            );
+        };
+        model.sample_rate()
+    };
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
+    tokio::spawn(async move {
+        // 写锁覆盖整段合成：合成器不是并发安全的。
+        let guard = model_ref.write().await;
+        let Some(model) = guard.instance.tts_model() else {
+            return;
+        };
+        let result = tokio::task::block_in_place(move || {
+            model.synthesize_pcm_stream(&text, &voice, speed, move |pcm| {
+                let mut bytes = Vec::with_capacity(pcm.len() * 2);
+                for sample in pcm {
+                    bytes.extend_from_slice(&sample.to_le_bytes());
+                }
+                // 接收端断了（客户端提前挂断）就停止合成。
+                tx.blocking_send(bytes).is_ok()
+            })
+        });
+        if let Err(error) = result {
+            tracing::error!(%error, "流式合成失败");
+        }
+    });
+
+    let body_stream = async_stream::stream! {
+        let mut rx = rx;
+        while let Some(chunk) = rx.recv().await {
+            yield Ok::<_, std::io::Error>(Bytes::from(chunk));
+        }
+    };
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header("X-Audio-Rate", sample_rate.to_string())
+        .header("X-Audio-Channels", "1")
+        .body(Body::from_stream(body_stream))
+        .expect("failed to build tts stream response")
 }
 
 // --------------------------------------------------------------------------- //
@@ -242,7 +329,11 @@ mod tests {
     #[test]
     fn rejects_empty_and_odd_bodies() {
         assert!(check_asr_request(&headers(None), 0).is_some());
-        assert!(check_asr_request(&headers(None), 3).unwrap().contains("偶数"));
+        assert!(
+            check_asr_request(&headers(None), 3)
+                .unwrap()
+                .contains("偶数")
+        );
     }
 
     #[test]
