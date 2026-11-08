@@ -63,6 +63,9 @@ pub(crate) struct PetServeArgs {
     /// Laya 单次推理超时（毫秒）；0 用默认 15000。
     #[arg(long, default_value_t = 15_000)]
     pub request_timeout_ms: u64,
+    /// 推理线程数（sherpa-onnx 的 intra-op 线程；0 = 按 CPU 自动，取逻辑核数）。
+    #[arg(long, default_value_t = 0)]
+    pub threads: i32,
 }
 
 #[derive(Args, Debug)]

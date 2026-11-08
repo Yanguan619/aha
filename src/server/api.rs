@@ -43,6 +43,20 @@ pub struct InitOptions {
     pub min_confidence: f32,
     /// Laya 单次推理超时（毫秒）；0 用默认 15000。
     pub request_timeout_ms: u64,
+    /// sherpa-onnx 的推理线程数；0 = 按 CPU 自动。
+    pub threads: i32,
+}
+
+/// 默认推理线程数（sherpa-onnx / onnxruntime 的 intra-op 线程）。
+///
+/// 实测（Ryzen 5 9600X，12 逻辑核 / 6 物理核）：TTS 线程 1/2/4/6/8/12 的 long 文本延迟
+/// 是 3619/2962/1973/1574/**1391**/1523ms——8 线程最优，超过 8 后同步开销反噬。
+/// 所以默认取 `逻辑核数夹到 4..=8`，不再写死 4。
+fn default_threads() -> i32 {
+    std::thread::available_parallelism()
+        .map(|n| n.get() as i32)
+        .unwrap_or(4)
+        .clamp(4, 8)
 }
 
 pub fn init(
@@ -76,6 +90,7 @@ pub fn init(
                     aha::models::laya::route::MIN_CONFIDENCE
                 },
                 opts.request_timeout_ms,
+                opts.threads,
             )?;
             MODEL.get_or_init(|| {
                 Arc::new(RwLock::new(StoredModel {
@@ -85,8 +100,13 @@ pub fn init(
             });
             return Ok(());
         }
+        let threads = if opts.threads > 0 {
+            opts.threads
+        } else {
+            default_threads()
+        };
         let model_path = string_to_static_str(path);
-        load_model(model_type, model_path, None, None)?
+        load_model(model_type, model_path, None, None, threads)?
     };
 
     MODEL.get_or_init(|| {

@@ -271,6 +271,7 @@ pub fn load_model<'a>(
     path: &str,
     device: Option<&Device>,
     dtype: Option<DType>,
+    threads: i32,
 ) -> Result<ModelInstance<'a>> {
     let model = match model_type {
         WhichModel::AllMiniLML6V2 => {
@@ -365,14 +366,17 @@ pub fn load_model<'a>(
         }
         #[cfg(feature = "sherpa")]
         WhichModel::SenseVoice => {
-            let model = crate::models::sherpa::SenseVoiceModel::init_from_dir(path, 4)?;
+            let model = crate::models::sherpa::SenseVoiceModel::init_from_dir(
+                path,
+                if threads > 0 { threads } else { 4 },
+            )?;
             ModelInstance::SenseVoice(model)
         }
         #[cfg(feature = "sherpa")]
         WhichModel::Kokoro => {
             let model = crate::models::sherpa::KokoroTtsModel::init(
                 path,
-                4,
+                if threads > 0 { threads } else { 4 },
                 crate::models::sherpa::kokoro::DEFAULT_SID,
             )?;
             ModelInstance::Kokoro(model)
@@ -383,6 +387,7 @@ pub fn load_model<'a>(
                 std::path::Path::new(path),
                 crate::models::laya::route::MIN_CONFIDENCE,
                 15_000,
+                0,
             )?;
             ModelInstance::Laya(model)
         }

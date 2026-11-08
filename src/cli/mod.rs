@@ -138,6 +138,7 @@ pub(crate) async fn run_cli(args: CliArgs) -> anyhow::Result<()> {
             device: pet.device,
             min_confidence: pet.min_confidence,
             request_timeout_ms: pet.request_timeout_ms,
+            threads: pet.threads,
         },
     )?;
     start_http_server(
@@ -209,6 +210,7 @@ pub(crate) async fn run_serv(args: ServArgs) -> anyhow::Result<()> {
             device: pet.device,
             min_confidence: pet.min_confidence,
             request_timeout_ms: pet.request_timeout_ms,
+            threads: pet.threads,
         },
     )?;
     start_http_server(
@@ -243,6 +245,7 @@ pub(crate) async fn run_probe(args: ProbeArgs) -> anyhow::Result<()> {
                 &path,
                 aha::models::laya::route::MIN_CONFIDENCE,
                 15_000,
+                0,
             )?;
             aha::models::laya::selftest(&model).await?;
             return Ok(());

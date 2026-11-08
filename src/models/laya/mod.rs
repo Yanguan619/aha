@@ -65,6 +65,28 @@ pub fn check_device(requested: &str) -> Result<()> {
     }
 }
 
+/// 配置 candle/rayon 的 CPU 推理线程数。
+///
+/// candle 的 CPU matmul 走 rayon；rayon 默认用满**逻辑核**（这台机是 12），实测超订后
+/// 反而更慢：Laya 模型路径 1/4/6/12 线程 = 292/177/**152**/197ms。**物理核数**（这里 6）
+/// 最优，也正好是 torch 的默认线程数。`requested > 0` 时按调用方给的来。
+pub fn configure_threads(requested: i32) {
+    let n = if requested > 0 {
+        requested as usize
+    } else {
+        let sys = sysinfo::System::new();
+        sys.physical_core_count().unwrap_or(4).clamp(2, 8)
+    };
+    // 只能设置一次全局池；已经建过（重复调用 / 别的库先建了）就忽略。
+    if rayon::ThreadPoolBuilder::new()
+        .num_threads(n)
+        .build_global()
+        .is_ok()
+    {
+        tracing::info!(threads = n, "Laya 推理线程数");
+    }
+}
+
 /// 常驻的 Laya 引擎：模型只加载一次，请求之间共享 [`Batcher`]（内部有队列 + 动态批处理）。
 pub struct LayaRouteModel {
     batcher: Batcher,
@@ -76,7 +98,14 @@ pub struct LayaRouteModel {
 
 impl LayaRouteModel {
     /// 从模型目录加载。`min_confidence` 是 vla 门控阈值（默认 [`route::MIN_CONFIDENCE`]）。
-    pub fn load(path: &Path, min_confidence: f32, request_timeout_ms: u64) -> Result<Self> {
+    /// `threads` 是 candle/rayon 的 CPU 线程数；0 = 按物理核自动。
+    pub fn load(
+        path: &Path,
+        min_confidence: f32,
+        request_timeout_ms: u64,
+        threads: i32,
+    ) -> Result<Self> {
+        configure_threads(threads);
         let model = sys1::models::load(
             path,
             Architecture::Laya,
