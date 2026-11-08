@@ -141,66 +141,6 @@ curl http://localhost:10100/v1/chat/completions \
 '
 ```
 
-### aha-ui
-```bash
-cd aha-ui
-``` 
-
-#### use npm
-##### install npm
-refer to https://nodejs.org/en/download
-```bash
-# Download and install nvm:
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.4/install.sh | bash
-# in lieu of restarting the shell
-\. "$HOME/.nvm/nvm.sh"
-# Download and install Node.js:
-nvm install 24
-# Verify the Node.js version:
-node -v # Should print "v24.15.0".
-# Verify npm version:
-npm -v # Should print "11.12.1".
-```
-
-##### npm run aha-ui
-```bash
-# Make sure in the aha-ui directory
-# and make sure that aha has been compiled
-npm install
-npm run tauri dev
-```
-
-##### npm build & install & run
-```bash
-npm run tauri build
-# target in
-# -- aha-ui/src-tauri/target/release/bundle/deb/aha-ui_0.1.0_amd64.deb
-# -- aha-ui/src-tauri/target/release/bundle/rpm/aha-ui-0.1.0-1.x86_64.rpm
-# -- aha-ui/src-tauri/target/release/bundle/appimage/aha-ui_0.1.0_amd64.AppImage
-```
-
-#### use pnpm
-##### install pnpm
-```bash
-curl -fsSL https://get.pnpm.io/install.sh | sh -
-```
-
-##### pnpm run aha-ui
-```bash
-# Make sure in the aha-ui directory
-# and make sure that aha has been compiled
-pnpm run tauri dev
-```
-
-##### pnpm build & install & run
-```bash
-pnpm run tauri build
-# target in
-# -- aha-ui/src-tauri/target/release/bundle/deb/aha-ui_0.1.0_amd64.deb
-# -- aha-ui/src-tauri/target/release/bundle/rpm/aha-ui-0.1.0-1.x86_64.rpm
-# -- aha-ui/src-tauri/target/release/bundle/appimage/aha-ui_0.1.0_amd64.AppImage
-```
-
 ## Documentation
 
 | Document | Description |

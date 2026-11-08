@@ -30,6 +30,3 @@ modify_test.md
 progress.md
 task_plan.md
 
-aha-ui/node_modules
-aha-ui/src-tauri/target/*
-aha-ui/dist/*

@@ -140,66 +140,6 @@ curl http://localhost:10100/v1/chat/completions \
   }'
 ```
 
-### aha-ui
-```bash
-cd aha-ui
-``` 
-
-#### 使用 npm
-##### 安装 npm
-参考 https://nodejs.org/en/download
-```bash
-# Download and install nvm:
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.4/install.sh | bash
-# in lieu of restarting the shell
-\. "$HOME/.nvm/nvm.sh"
-# Download and install Node.js:
-nvm install 24
-# Verify the Node.js version:
-node -v # Should print "v24.15.0".
-# Verify npm version:
-npm -v # Should print "11.12.1".
-```
-
-##### npm 运行 aha-ui
-```bash
-# 确定在 aha-ui目录
-# 确定 aha 编译完成
-npm install
-npm run tauri dev
-```
-
-##### npm 编译 & 安装 & 运行
-```bash
-npm run tauri build
-# target in
-# -- aha-ui/src-tauri/target/release/bundle/deb/aha-ui_0.1.0_amd64.deb
-# -- aha-ui/src-tauri/target/release/bundle/rpm/aha-ui-0.1.0-1.x86_64.rpm
-# -- aha-ui/src-tauri/target/release/bundle/appimage/aha-ui_0.1.0_amd64.AppImage
-```
-
-#### 使用 pnpm
-##### 安装 pnpm
-```bash
-curl -fsSL https://get.pnpm.io/install.sh | sh -
-```
-
-##### pnpm 运行 aha-ui
-```bash
-# 确定在 aha-ui目录
-# 确定 aha 编译完成
-pnpm run tauri dev
-```
-
-##### pnpm 编译 & 安装 & 运行
-```bash
-pnpm run tauri build
-# target in
-# -- aha-ui/src-tauri/target/release/bundle/deb/aha-ui_0.1.0_amd64.deb
-# -- aha-ui/src-tauri/target/release/bundle/rpm/aha-ui-0.1.0-1.x86_64.rpm
-# -- aha-ui/src-tauri/target/release/bundle/appimage/aha-ui_0.1.0_amd64.AppImage
-```
-
 ## 文档
 
 | 文档 | 描述 |
