@@ -188,7 +188,8 @@ pub(crate) async fn run_serv(args: ServArgs) -> anyhow::Result<()> {
     }
     #[cfg(feature = "laya")]
     if model.is_laya_model() {
-        let (path, source) = aha::models::laya::resolve(weight_path.as_deref(), &model.as_string()).await?;
+        let (path, source) =
+            aha::models::laya::resolve(weight_path.as_deref(), &model.as_string()).await?;
         tracing::info!(dir = %path.display(), source, "Laya 模型目录就绪");
         model_path = path.display().to_string();
     }
@@ -236,8 +237,7 @@ pub(crate) async fn run_probe(args: ProbeArgs) -> anyhow::Result<()> {
     if model.is_laya_model() {
         aha::models::laya::check_device(&device)?;
         if selftest {
-            let (path, source) =
-                aha::models::laya::resolve(None, &model.as_string()).await?;
+            let (path, source) = aha::models::laya::resolve(None, &model.as_string()).await?;
             tracing::info!(dir = %path.display(), source, "Laya 模型目录就绪");
             let model = aha::models::laya::LayaRouteModel::load(
                 &path,

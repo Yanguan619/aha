@@ -16,11 +16,14 @@
 //! 三个模型都不是并发安全的，所以处理器拿的是 **写锁**（和 `/chat` 同一条锁），
 //! 一次只放一个请求进推理。
 
+#[cfg(feature = "sherpa")]
 use std::time::Instant;
 
+#[cfg(feature = "sherpa")]
+use axum::body::Body;
 use axum::{
     Json,
-    body::{Body, Bytes},
+    body::Bytes,
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -39,6 +42,7 @@ const TTS_MAX_BODY: usize = 64 * 1024;
 // POST /asr —— 裸 PCM16LE 16k 单声道
 // --------------------------------------------------------------------------- //
 
+#[cfg(feature = "sherpa")]
 pub async fn handle_asr(headers: HeaderMap, body: Bytes) -> Response {
     if let Some(message) = check_asr_request(&headers, body.len()) {
         return fail(StatusCode::BAD_REQUEST, message);
@@ -50,8 +54,10 @@ pub async fn handle_asr(headers: HeaderMap, body: Bytes) -> Response {
     }
 
     let pcm: Vec<i16> = body
-        .chunks_exact(2)
-        .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| i16::from_le_bytes(*pair))
         .collect();
     let samples: Vec<f32> = pcm.iter().map(|&s| s as f32 / 32768.0).collect();
     let dur_ms = body.len() * 1000 / (16_000 * 2);
@@ -102,7 +108,7 @@ fn check_asr_request(headers: &HeaderMap, len: usize) -> Option<String> {
     if rate != 16_000 {
         return Some(format!("只接受 16000Hz（收到 {rate}）；请在 Go 侧重采样"));
     }
-    if len % 2 != 0 {
+    if !len.is_multiple_of(2) {
         return Some("PCM 字节数必须是偶数（16bit）".to_owned());
     }
     None
@@ -112,6 +118,7 @@ fn check_asr_request(headers: &HeaderMap, len: usize) -> Option<String> {
 // POST /tts —— {text,voice?,speed?} → audio/wav
 // --------------------------------------------------------------------------- //
 
+#[cfg(feature = "sherpa")]
 #[derive(serde::Deserialize)]
 struct TtsRequest {
     #[serde(default)]
@@ -123,6 +130,10 @@ struct TtsRequest {
 }
 
 /// 解析 `/tts` 和 `/tts/stream` 共用的请求体。
+///
+/// 错误直接返回 `Response`（`clippy::result_large_err`：为了省一次 match 不理它）。
+#[cfg(feature = "sherpa")]
+#[allow(clippy::result_large_err)]
 fn parse_tts_request(body: &[u8]) -> Result<(String, String, f32), Response> {
     if body.is_empty() {
         return Err(error_json(StatusCode::BAD_REQUEST, "请求体是空的"));
@@ -141,6 +152,7 @@ fn parse_tts_request(body: &[u8]) -> Result<(String, String, f32), Response> {
     Ok((text, voice, speed))
 }
 
+#[cfg(feature = "sherpa")]
 pub async fn handle_tts(body: Bytes) -> Response {
     let (text, voice, speed) = match parse_tts_request(&body) {
         Ok(parsed) => parsed,
@@ -187,6 +199,7 @@ pub async fn handle_tts(body: Bytes) -> Response {
 ///
 /// 合成放在 `block_in_place` 里跑（sherpa 的 C 接口是阻塞的），每生成一帧就通过
 /// channel 推给响应流，所以首帧延迟 ≈ 一句的第一个分块，而不是整句合成完。
+#[cfg(feature = "sherpa")]
 pub async fn handle_tts_stream(body: Bytes) -> Response {
     let (text, voice, speed) = match parse_tts_request(&body) {
         Ok(parsed) => parsed,
@@ -254,6 +267,7 @@ pub async fn handle_tts_stream(body: Bytes) -> Response {
 // POST /route —— {text} → {target,choice,confidence,reason,text}
 // --------------------------------------------------------------------------- //
 
+#[cfg(feature = "laya")]
 pub async fn handle_route(body: Bytes) -> Response {
     let text = match parse_route_body(&body) {
         Ok(text) => text,
@@ -304,6 +318,7 @@ fn parse_route_body(body: &[u8]) -> Result<String, String> {
 // 小工具
 // --------------------------------------------------------------------------- //
 
+#[cfg(feature = "sherpa")]
 fn fail(status: StatusCode, message: impl Into<String>) -> Response {
     error_json(status, message)
 }

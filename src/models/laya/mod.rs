@@ -60,9 +60,7 @@ pub fn check_device(requested: &str) -> Result<()> {
         ("cuda", _) => bail!(
             "要 cuda 但这是 cpu 构建：cargo build --release --features laya-cuda（需要 nvcc）"
         ),
-        ("cpu", _) => bail!(
-            "要 cpu 但这是 cuda 构建：cargo build --release --features laya"
-        ),
+        ("cpu", _) => bail!("要 cpu 但这是 cuda 构建：cargo build --release --features laya"),
         other => bail!("不认识的设备 {other:?}（只支持 cpu / cuda）"),
     }
 }
@@ -254,7 +252,10 @@ pub async fn resolve(weight_path: Option<&str>, model_id: &str) -> Result<Resolv
             return Ok((path.to_path_buf(), "model-path"));
         }
         // 空目录（第一次启动）：当作下载目标
-        if !path.exists() || std::fs::read_dir(path).map(|mut d| d.next().is_none()).unwrap_or(true)
+        if !path.exists()
+            || std::fs::read_dir(path)
+                .map(|mut d| d.next().is_none())
+                .unwrap_or(true)
         {
             tracing::info!(dir = %path.display(), "模型目录为空，开始下载 Laya");
             let downloaded = sys1::hub::download(model_id, "main")

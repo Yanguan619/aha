@@ -228,7 +228,8 @@ mod tests {
     #[test]
     fn keyword_layer_stays_out_of_conversation() {
         // 长句里的动词不能变成物理动作
-        for text in ["你能走两步吗", "讲个笑话", "往前走会怎么样呢", "什么是爱"] {
+        for text in ["你能走两步吗", "讲个笑话", "往前走会怎么样呢", "什么是爱"]
+        {
             assert!(!keyword_hit(&normalize(text)), "{text} 被关键词层误伤");
         }
     }

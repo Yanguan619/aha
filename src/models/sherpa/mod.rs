@@ -68,7 +68,10 @@ struct FileEntry {
 /// - 已经齐了就直接用，**不联网、不重复下**（`.ready` 标记 + 逐个文件核大小）；
 /// - 缺的才从 HF 镜像拉，流式写 `.part` 再原子改名（中断不会留下"看起来存好了"的半截模型）；
 /// - 换源用 `HF_ENDPOINT`（例如 `https://huggingface.co`）。
-pub fn ensure_downloaded(dir: &str, model: crate::models::common::model_mapping::WhichModel) -> Result<()> {
+pub fn ensure_downloaded(
+    dir: &str,
+    model: crate::models::common::model_mapping::WhichModel,
+) -> Result<()> {
     let spec = match model {
         #[cfg(feature = "sherpa")]
         crate::models::common::model_mapping::WhichModel::SenseVoice => SENSE_VOICE,
@@ -107,7 +110,7 @@ fn ensure(dir: &str, spec: SherpaSpec) -> Result<()> {
         download_file(file, &dst, &spec)?;
         done += 1;
         // 大文件（>1MB）下完报一次；小文件攒 50 个报一次，别把日志刷爆
-        if file.size.unwrap_or(0) > 1 << 20 || done % 50 == 0 {
+        if file.size.unwrap_or(0) > 1 << 20 || done.is_multiple_of(50) {
             tracing::info!(path = %file.path, done, total = files.len(), "下载中");
         }
     }
@@ -116,7 +119,10 @@ fn ensure(dir: &str, spec: SherpaSpec) -> Result<()> {
     for name in spec.required {
         let path = dir.join(name);
         if !path.exists() {
-            bail!("{} 里缺少 {name}（模型仓库的文件列表变了？）", dir.display());
+            bail!(
+                "{} 里缺少 {name}（模型仓库的文件列表变了？）",
+                dir.display()
+            );
         }
     }
     fs::write(dir.join(MARKER), spec.repo).context("写 .ready 失败")?;
@@ -127,14 +133,20 @@ fn ensure(dir: &str, spec: SherpaSpec) -> Result<()> {
 /// 已经完整下过一遍？只核必填项——**不依赖 `.ready` 标记**：
 /// 模型可能是 Python 那条退回路径下的（它不写标记），文件齐了就不该再联网。
 fn ready(dir: &Path, spec: SherpaSpec) -> bool {
-    spec.required
-        .iter()
-        .all(|name| fs::metadata(dir.join(name)).map(|m| m.is_file() && m.len() > 0).unwrap_or(false))
+    spec.required.iter().all(|name| {
+        fs::metadata(dir.join(name))
+            .map(|m| m.is_file() && m.len() > 0)
+            .unwrap_or(false)
+    })
 }
 
 /// 问 HF 镜像要一份递归文件列表（`/api/models/<repo>/tree/main?recursive=1`）。
 fn fetch_file_list(spec: &SherpaSpec) -> Result<Vec<FileEntry>> {
-    let url = format!("{}/api/models/{}/tree/main?recursive=1", hf_base(), spec.repo);
+    let url = format!(
+        "{}/api/models/{}/tree/main?recursive=1",
+        hf_base(),
+        spec.repo
+    );
     let client = client()?;
     let response = client
         .get(&url)
@@ -172,12 +184,7 @@ fn usable(path: &Path, size: u64) -> bool {
 }
 
 fn download_file(file: &FileEntry, dst: &Path, spec: &SherpaSpec) -> Result<()> {
-    let url = format!(
-        "{}/{}/resolve/main/{}",
-        hf_base(),
-        spec.repo,
-        file.path
-    );
+    let url = format!("{}/{}/resolve/main/{}", hf_base(), spec.repo, file.path);
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent).with_context(|| format!("建不了目录 {}", parent.display()))?;
     }
@@ -210,10 +217,7 @@ fn download_file(file: &FileEntry, dst: &Path, spec: &SherpaSpec) -> Result<()> 
         && expected >= TINY
         && got != expected
     {
-        bail!(
-            "下载不完整：{} 得到 {got} 字节，期望 {expected}",
-            file.path
-        );
+        bail!("下载不完整：{} 得到 {got} 字节，期望 {expected}", file.path);
     }
     fs::rename(&part, dst).with_context(|| format!("改名失败：{}", part.display()))?;
     Ok(())

@@ -8,6 +8,8 @@ pub mod fun_asr_nano;
 pub mod glm_asr_nano;
 pub mod glm_ocr;
 pub mod hunyuan_ocr;
+#[cfg(feature = "laya")]
+pub mod laya;
 pub mod lfm2;
 pub mod lfm2vl;
 pub mod mask_gct;
@@ -16,8 +18,6 @@ pub mod minicpm5;
 pub mod moss_audio_tokenizer_nano;
 pub mod moss_tts_nano;
 pub mod paddleocr_vl;
-#[cfg(feature = "laya")]
-pub mod laya;
 pub mod qwen2;
 pub mod qwen2_5vl;
 pub mod qwen3;

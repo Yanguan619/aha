@@ -15,6 +15,7 @@ use tower_http::trace::TraceLayer;
 // ASR (Automatic Speech Recognition) API module
 pub(crate) mod api;
 pub(crate) mod asr;
+#[cfg(any(feature = "sherpa", feature = "laya"))]
 pub(crate) mod deskpet;
 pub(crate) mod embedding;
 pub(crate) mod error;
@@ -82,7 +83,7 @@ pub(crate) async fn start_http_server(
 
 /// Build the axum router serving every aha HTTP endpoint.
 fn build_router(shutdown_flag: Arc<AtomicBool>) -> Router {
-    Router::new()
+    let app = Router::new()
         // /v1/chat/completions and /chat/completions
         .route("/v1/chat/completions", post(api::chat))
         .route("/chat/completions", post(api::chat))
@@ -113,13 +114,19 @@ fn build_router(shutdown_flag: Arc<AtomicBool>) -> Router {
         .route(
             "/v1/audio/transcriptions",
             post(asr::transcriptions).layer(DefaultBodyLimit::max(MULTIPART_BODY_LIMIT)),
-        )
-        // 桌宠契约：/asr（裸 PCM16LE）、/tts（WAV）、/route（Laya 决策）
+        );
+
+    // 桌宠契约：/asr（裸 PCM16LE）、/tts（WAV）、/tts/stream（PCM 流）由 sherpa 后端提供，
+    // /route（Laya 决策）由 laya 后端提供；没开对应 feature 时这些端点不存在。
+    #[cfg(feature = "sherpa")]
+    let app = app
         .route("/asr", post(deskpet::handle_asr))
         .route("/tts", post(deskpet::handle_tts))
-        // /tts/stream：边合成边吐 PCM16LE（首帧早于整句合成完）
-        .route("/tts/stream", post(deskpet::handle_tts_stream))
-        .route("/route", post(deskpet::handle_route))
+        .route("/tts/stream", post(deskpet::handle_tts_stream));
+    #[cfg(feature = "laya")]
+    let app = app.route("/route", post(deskpet::handle_route));
+
+    app
         // Unknown routes and wrong methods also answer with the OpenAI error envelope
         .fallback(error::fallback_not_found)
         .method_not_allowed_fallback(error::fallback_method_not_allowed)
