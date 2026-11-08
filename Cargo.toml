@@ -90,3 +90,16 @@ needless_range_loop = "allow"
 single_range_in_vec_init = "allow"
 manual_div_ceil = "allow"
 
+# VLA 自检/对齐工具只在开了 vla 特性时编译
+[[example]]
+name = "turbovla_check"
+required-features = ["vla"]
+
+[[example]]
+name = "turbovla_dump"
+required-features = ["vla"]
+
+[[example]]
+name = "turbovla_action"
+required-features = ["vla"]
+
