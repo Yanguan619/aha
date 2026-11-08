@@ -25,6 +25,8 @@ pub mod qwen3_embedding;
 pub mod qwen3_reranker;
 pub mod qwen3vl;
 pub mod rmbg2_0;
+#[cfg(feature = "sherpa")]
+pub mod sherpa;
 pub mod voxcpm;
 pub mod voxcpm_refact;
 pub mod w2v_bert_2_0;
@@ -95,6 +97,10 @@ pub enum ModelInstance<'a> {
     GlmASRNano(GlmAsrNanoGenerateModel<'a>),
     FunASRNano(FunAsrNanoGenerateModel),
     GlmOCR(GlmOcrGenerateModel),
+    #[cfg(feature = "sherpa")]
+    SenseVoice(crate::models::sherpa::SenseVoiceModel),
+    #[cfg(feature = "sherpa")]
+    Kokoro(crate::models::sherpa::KokoroTtsModel),
 }
 
 impl<'a> GenerateModel for ModelInstance<'a> {
@@ -128,6 +134,10 @@ impl<'a> GenerateModel for ModelInstance<'a> {
             ModelInstance::GlmASRNano(model) => model.generate(mes),
             ModelInstance::FunASRNano(model) => model.generate(mes),
             ModelInstance::GlmOCR(model) => model.generate(mes),
+            #[cfg(feature = "sherpa")]
+            ModelInstance::SenseVoice(model) => model.generate(mes),
+            #[cfg(feature = "sherpa")]
+            ModelInstance::Kokoro(model) => model.generate(mes),
         }
     }
 
@@ -170,6 +180,10 @@ impl<'a> GenerateModel for ModelInstance<'a> {
             ModelInstance::GlmASRNano(model) => model.generate_stream(mes),
             ModelInstance::FunASRNano(model) => model.generate_stream(mes),
             ModelInstance::GlmOCR(model) => model.generate_stream(mes),
+            #[cfg(feature = "sherpa")]
+            ModelInstance::SenseVoice(model) => model.generate_stream(mes),
+            #[cfg(feature = "sherpa")]
+            ModelInstance::Kokoro(model) => model.generate_stream(mes),
         }
     }
 }
@@ -307,6 +321,20 @@ pub fn load_model<'a>(
         WhichModel::GlmOCR => {
             let model = GlmOcrGenerateModel::init(path, device, dtype)?;
             ModelInstance::GlmOCR(model)
+        }
+        #[cfg(feature = "sherpa")]
+        WhichModel::SenseVoice => {
+            let model = crate::models::sherpa::SenseVoiceModel::init_from_dir(path, 4)?;
+            ModelInstance::SenseVoice(model)
+        }
+        #[cfg(feature = "sherpa")]
+        WhichModel::Kokoro => {
+            let model = crate::models::sherpa::KokoroTtsModel::init(
+                path,
+                4,
+                crate::models::sherpa::kokoro::DEFAULT_SID,
+            )?;
+            ModelInstance::Kokoro(model)
         }
         _ => {
             let model_id = model_type.as_string();

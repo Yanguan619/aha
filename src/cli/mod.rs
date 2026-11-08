@@ -99,6 +99,13 @@ pub(crate) async fn run_cli(args: CliArgs) -> anyhow::Result<()> {
         let model_path = match path_common.weight_path {
             Some(path) => path,
             None => {
+                #[cfg(feature = "sherpa")]
+                if model.is_sherpa_model() {
+                    return Err(anyhow!(
+                        "{model_id} is served by sherpa-onnx and is not hosted on ModelScope.\n\
+                         Download the model (ONNX + tokens/voices) and pass --weight-path <dir>."
+                    ));
+                }
                 let save_dir = match save_dir {
                     Some(dir) => dir,
                     None => get_default_save_dir().expect("Failed to get home directory"),
@@ -315,6 +322,14 @@ pub(crate) fn run_run(args: RunArgs) -> anyhow::Result<()> {
         }
         WhichModel::GlmOCR => {
             glm_ocr::GlmOcrExec::run(&input, output.as_deref(), &weight_path)?;
+        }
+        #[cfg(feature = "sherpa")]
+        WhichModel::SenseVoice => {
+            sense_voice::SenseVoiceExec::run(&input, output.as_deref(), &weight_path)?;
+        }
+        #[cfg(feature = "sherpa")]
+        WhichModel::Kokoro => {
+            kokoro::KokoroExec::run(&input, output.as_deref(), &weight_path)?;
         }
     }
 

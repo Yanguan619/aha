@@ -9,6 +9,8 @@ pub mod fun_asr_nano;
 pub mod glm_asr_nano;
 pub mod glm_ocr;
 pub mod hunyuan_ocr;
+#[cfg(feature = "sherpa")]
+pub mod kokoro;
 pub mod lfm2;
 pub mod lfm2vl;
 pub mod minicpm4;
@@ -22,6 +24,8 @@ pub mod qwen3_embedding;
 pub mod qwen3_reranker;
 pub mod qwen3vl;
 pub mod rmbg2_0;
+#[cfg(feature = "sherpa")]
+pub mod sense_voice;
 pub mod voxcpm;
 
 use anyhow::Result;

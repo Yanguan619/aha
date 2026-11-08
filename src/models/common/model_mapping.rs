@@ -88,6 +88,12 @@ pub enum WhichModel {
     FunASRNano2512,
     #[value(name = "ZhipuAI/GLM-OCR")]
     GlmOCR,
+    #[cfg(feature = "sherpa")]
+    #[value(name = "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17")]
+    SenseVoice,
+    #[cfg(feature = "sherpa")]
+    #[value(name = "csukuangfj/kokoro-multi-lang-v1_1")]
+    Kokoro,
 }
 
 impl WhichModel {
@@ -113,6 +119,13 @@ impl WhichModel {
     pub fn is_onnx(&self) -> bool {
         let model_id = self.as_string();
         model_id.to_lowercase().contains("onnx")
+    }
+
+    /// Models served through sherpa-onnx are not hosted on ModelScope, so they
+    /// must be supplied with an explicit `--weight-path`.
+    #[cfg(feature = "sherpa")]
+    pub fn is_sherpa_model(&self) -> bool {
+        matches!(self, WhichModel::SenseVoice | WhichModel::Kokoro)
     }
 
     /// Get the WhichModel enum list
@@ -185,6 +198,10 @@ impl WhichModel {
             WhichModel::Qwen3Reranker0_6B
             | WhichModel::Qwen3Reranker4B
             | WhichModel::Qwen3Reranker8B => "reranker",
+            #[cfg(feature = "sherpa")]
+            WhichModel::SenseVoice => "asr",
+            #[cfg(feature = "sherpa")]
+            WhichModel::Kokoro => "tts",
         }
     }
 }

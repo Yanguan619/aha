@@ -36,8 +36,8 @@ aha is a high-performance, cross-platform AI inference engine built with Rust an
 | **Text** | Qwen3, MiniCPM4, MiniCPM5, LFM2, LFM2.5 |
 | **Vision** | Qwen2.5-VL, Qwen3-VL, Qwen3.5, <br> LFM2.5-VL, LFM2-VL |
 | **OCR** | DeepSeek-OCR, DeepSeek-OCR-2 , PaddleOCR-VL <br> PaddleOCR-VL1.5, PaddleOCR-VL1.6, Hunyuan-OCR <br> GLM-OCR |
-| **ASR** | GLM-ASR-Nano, Fun-ASR-Nano, Qwen3-ASR |
-| **TTS** | VoxCPM, VoxCPM1.5, VoxCPM2, Moss-TTS-Nano |
+| **ASR** | GLM-ASR-Nano, Fun-ASR-Nano, Qwen3-ASR, <br> SenseVoice (sherpa-onnx, `--features sherpa`) |
+| **TTS** | VoxCPM, VoxCPM1.5, VoxCPM2, Moss-TTS-Nano, <br> Kokoro (sherpa-onnx, `--features sherpa`) |
 | **Image** | RMBG-2.0 (background removal) |
 | **Embedding** | Qwen3-Embedding, all-MiniLM-L6-v2 |
 | **Reranker** | Qwen3-Reranker |
@@ -97,7 +97,18 @@ cargo build --release --features cuda,flash-attn
 
 # FFmpeg (multimedia processing)
 cargo build --release --features ffmpeg
+
+# sherpa-onnx backends: SenseVoice ASR + Kokoro TTS
+# First build downloads a prebuilt C++ static library (~117 MB).
+# Set SHERPA_ONNX_ARCHIVE_DIR to reuse an already downloaded archive.
+cargo build --release --features sherpa
 ```
+
+> **sherpa-onnx note**: the `sherpa` feature links the sherpa-onnx **shared** library,
+> so the produced binary needs `onnxruntime.dll` and `sherpa-onnx-*.dll` next to it
+> (they are copied into `target/<profile>/` by the build script).
+> Models for these two backends are **not** hosted on ModelScope — pass a local
+> directory with `--weight-path`.
 
 ### CLI Quick Reference
 

@@ -102,12 +102,18 @@ ZhipuAI/GLM-OCR                          ZhipuAI              ocr          ✔
 | **Fun-ASR-Nano-2512** | 2G | Chinese/English | FunAudioLLM/Fun-ASR-Nano-2512 | Not Specified |
 | **GLM-ASR-Nano-2512** | 4.5G | Chinese/English | ZhipuAI/GLM-ASR-Nano-2512 | [MIT](https://huggingface.co/datasets/choosealicense/licenses/blob/main/markdown/mit.md) |
 | **Qwen3-ASR** | 0.6B <br> 1.7B | Chinese/English | Qwen/Qwen3-ASR-0.6B <br> Qwen/Qwen3-ASR-1.7B | [Apache 2.0](https://huggingface.co/datasets/choosealicense/licenses/blob/main/markdown/apache-2.0.md) |
+| **SenseVoice** (sherpa-onnx) | 234M | Chinese/English/Japanese/Korean/Cantonese | csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17 | [Apache 2.0](https://huggingface.co/datasets/choosealicense/licenses/blob/main/markdown/apache-2.0.md) |
+
+> SenseVoice runs on sherpa-onnx (ONNX Runtime) instead of candle, so it requires
+> building with `--features sherpa`. Its weights are not hosted on ModelScope —
+> pass a local directory via `--weight-path`.
 
 ## Audio Generation
 
 | Model | version | Model Id | License |
 |-------|-----------|---------|---------|
 | **VoxCPM** | 1<br>1.5<br>2 | OpenBMB/VoxCPM-0.5B <br> OpenBMB/VoxCPM1.5 <br> OpenBMB/VoxCPM2 | [Apache 2.0](https://huggingface.co/datasets/choosealicense/licenses/blob/main/markdown/apache-2.0.md) |
+| **Kokoro** (sherpa-onnx) | 82M | csukuangfj/kokoro-multi-lang-v1_1 | [Apache 2.0](https://huggingface.co/datasets/choosealicense/licenses/blob/main/markdown/apache-2.0.md) |
 
 ## Image Processing
 

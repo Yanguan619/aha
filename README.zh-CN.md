@@ -35,8 +35,8 @@ aha 是一款基于 Rust 和 Candle 框架构建的高性能跨平台 AI 推理�
 | **文本** | Qwen3, MiniCPM4, MiniCPM5, LFM2, LFM2.5 |
 | **视觉** | Qwen2.5-VL, Qwen3-VL, Qwen3.5 <br> LFM2.5-VL, LFM2-VL |
 | **OCR** | DeepSeek-OCR, DeepSeek-OCR-2, PaddleOCR-VL,  <br>PaddleOCR-VL1.5, PaddleOCR-VL1.6, Hunyuan-OCR <br> GLM-OCR |
-| **ASR** | GLM-ASR-Nano, Fun-ASR-Nano, Qwen3-ASR |
-| **TTS** | VoxCPM, VoxCPM1.5, VoxCPM2, Moss-TTS-Nano |
+| **ASR** | GLM-ASR-Nano, Fun-ASR-Nano, Qwen3-ASR, <br> SenseVoice (sherpa-onnx, `--features sherpa`) |
+| **TTS** | VoxCPM, VoxCPM1.5, VoxCPM2, Moss-TTS-Nano, <br> Kokoro (sherpa-onnx, `--features sherpa`) |
 | **图像** | RMBG-2.0 (背景移除) |
 | **嵌入** | Qwen3-Embedding, all-MiniLM-L6-v2 |
 | **重排序** | Qwen3-Reranker |
@@ -96,7 +96,16 @@ cargo build --release --features cuda,flash-attn
 
 # FFmpeg (多媒体处理)
 cargo build --release --features ffmpeg
+
+# sherpa-onnx 后端：SenseVoice ASR + Kokoro TTS
+# 首次构建会下载预编译 C++ 静态库（约 117 MB）
+# 已有压缩包时用 SHERPA_ONNX_ARCHIVE_DIR 指向其目录，避免重复下载
+cargo build --release --features sherpa
 ```
+
+> **sherpa-onnx 说明**：`sherpa` 特性链接的是 sherpa-onnx **动态库**，产物旁边需要
+> `onnxruntime.dll` 和 `sherpa-onnx-*.dll`（构建脚本会自动拷到 `target/<profile>/`）。
+> 这两个后端的模型**没有托管在 ModelScope**，请用 `--weight-path` 指向本地目录。
 
 ### CLI 快速参考
 
