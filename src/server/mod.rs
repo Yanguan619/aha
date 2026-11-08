@@ -33,8 +33,25 @@ pub(crate) async fn start_http_server(
     allow_remote_shutdown: bool,
     parent_pid: u32,
 ) -> anyhow::Result<()> {
+    start_http_server_multi(address, vec![port], allow_remote_shutdown, parent_pid).await
+}
+
+/// 在多个端口上监听**同一套路由/同一个模型注册表**（`multi` 用：每个角色一个端口）。
+///
+/// 桌宠的三个地址（tts/asr/laya）保持不变，但背后是同一个进程——省掉三套进程/DLL/
+/// 生命周期。端口都绑回环，和单端口版本一样带 `--parent-pid` 看门狗。
+pub(crate) async fn start_http_server_multi(
+    address: String,
+    ports: Vec<u16>,
+    allow_remote_shutdown: bool,
+    parent_pid: u32,
+) -> anyhow::Result<()> {
+    let Some(&first_port) = ports.first() else {
+        return Err(anyhow::anyhow!("没有要监听的端口"));
+    };
+
     // Set server port for shutdown endpoint
-    set_server_port(port, allow_remote_shutdown);
+    set_server_port(first_port, allow_remote_shutdown);
 
     // 桌宠委托模式：父进程（pet.exe）一死就跟着退出，别留孤儿占着端口。
     // 和旧 asr-route / tts-route / laya-route 的 --parent-pid 看门狗同一个约定。
@@ -42,40 +59,58 @@ pub(crate) async fn start_http_server(
         process::watch_parent(parent_pid);
     }
 
-    // Create PID file for service tracking
+    // Create PID files for service tracking（每个端口一个）
     let pid = std::process::id();
-    create_pid_file(pid, port)?;
+    for &port in &ports {
+        create_pid_file(pid, port)?;
+    }
 
     // Set up shutdown flag
     let shutdown_flag = Arc::new(AtomicBool::new(false));
-    let shutdown_flag_clone = shutdown_flag.clone();
 
     // Configure Ctrl+C handler for graceful shutdown
-    let port_for_cleanup = port;
+    let ports_for_cleanup = ports.clone();
+    let shutdown_flag_clone = shutdown_flag.clone();
     let shutdown_handler = tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
         println!("Received shutdown signal, gracefully shutting down...");
         shutdown_flag_clone.store(true, Ordering::SeqCst);
         // Give time for existing requests to complete
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        // Cleanup PID file
-        let _ = cleanup_pid_file(port_for_cleanup);
+        for &port in &ports_for_cleanup {
+            let _ = cleanup_pid_file(port);
+        }
         std::process::exit(0);
     });
 
     let app = build_router(shutdown_flag);
 
     let ip = IpAddr::from_str(&address)?;
-    let listener = tokio::net::TcpListener::bind((ip, port)).await?;
+    let mut listeners = Vec::with_capacity(ports.len());
+    for &port in &ports {
+        listeners.push(tokio::net::TcpListener::bind((ip, port)).await?);
+    }
 
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .await?;
+    // 每个端口一个 serve 任务，共享同一个 app（Router 是 Clone）。
+    let mut tasks = Vec::with_capacity(listeners.len());
+    for listener in listeners {
+        let app = app.clone();
+        tasks.push(tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+        }));
+    }
+    for task in tasks {
+        let _ = task.await;
+    }
 
-    // Cleanup PID file when server exits
-    cleanup_pid_file(port)?;
+    // Cleanup PID files when server exits
+    for &port in &ports {
+        let _ = cleanup_pid_file(port);
+    }
     shutdown_handler.abort();
 
     Ok(())

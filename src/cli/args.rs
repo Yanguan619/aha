@@ -15,6 +15,8 @@ pub(crate) enum Commands {
     Cli(CliArgs),
     /// Start service only (--weight-path is optional, defaults to ~/.aha/{model_id})
     Serv(ServArgs),
+    /// 一个进程同时服务多个模型（桌宠的 asr/tts/laya 三件套，单端口）
+    Multi(MultiArgs),
     /// 校验模型与二进制编译特征是否对得上（桌宠拉起 Laya 前先问一次）
     Probe(ProbeArgs),
     /// List all running aha services
@@ -207,4 +209,39 @@ pub(crate) struct ListArgs {
     /// Output models in JSON format (includes name, model_id, and type fields)
     #[arg(short, long)]
     pub json: bool,
+}
+
+/// Arguments for the 'multi' subcommand: 一个进程同时服务多个模型（桌宠的 asr/tts/laya）。
+///
+/// 三个角色共用一个端口、一套 DLL，各自独立加载、独立加锁（不同模型可并发）。
+/// 没启用的角色对应端点直接返回 400；OpenAI 端点按请求里的 `model` 字段分发。
+#[derive(Args, Debug)]
+pub(crate) struct MultiArgs {
+    /// SenseVoice 模型目录（启用 ASR 角色）；首次会自动下载
+    #[arg(long)]
+    pub asr: Option<String>,
+    /// Kokoro 模型目录（启用 TTS 角色）；首次会自动下载
+    #[arg(long)]
+    pub tts: Option<String>,
+    /// 启用 Laya 决策角色（模型优先用 HF 缓存，其次下载）
+    #[arg(long)]
+    pub laya: bool,
+    /// Laya 模型目录（不给则先找 HF 缓存，再下载）
+    #[arg(long)]
+    pub laya_path: Option<String>,
+    /// ASR 角色监听端口（启用 --asr 时生效）
+    #[arg(long, default_value_t = 8771)]
+    pub asr_port: u16,
+    /// TTS 角色监听端口（启用 --tts 时生效）
+    #[arg(long, default_value_t = 8770)]
+    pub tts_port: u16,
+    /// Laya 角色监听端口（启用 --laya 时生效）
+    #[arg(long, default_value_t = 8772)]
+    pub laya_port: u16,
+
+    #[command(flatten)]
+    pub server_common: ServerCommonArgs,
+
+    #[command(flatten)]
+    pub pet: PetServeArgs,
 }

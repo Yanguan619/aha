@@ -29,7 +29,7 @@ use axum::{
 };
 use serde_json::json;
 
-use crate::server::api::MODEL;
+use crate::server::api::model_by_key;
 
 /// ASR：单段上限 60 秒（和旧 asr-route 的 MAX_BYTES 一致）。
 const ASR_MAX_BYTES: usize = 16_000 * 2 * 60;
@@ -63,7 +63,7 @@ pub async fn handle_asr(headers: HeaderMap, body: Bytes) -> Response {
     let dur_ms = body.len() * 1000 / (16_000 * 2);
 
     let started = Instant::now();
-    let Some(model_ref) = MODEL.get() else {
+    let Some(model_ref) = model_by_key("asr") else {
         return error_json(StatusCode::SERVICE_UNAVAILABLE, "模型没有初始化");
     };
     let guard = model_ref.write().await;
@@ -160,7 +160,7 @@ pub async fn handle_tts(body: Bytes) -> Response {
     };
 
     let started = Instant::now();
-    let Some(model_ref) = MODEL.get() else {
+    let Some(model_ref) = model_by_key("tts") else {
         return error_json(StatusCode::SERVICE_UNAVAILABLE, "模型没有初始化");
     };
     let guard = model_ref.write().await;
@@ -206,7 +206,7 @@ pub async fn handle_tts_stream(body: Bytes) -> Response {
         Err(response) => return response,
     };
 
-    let Some(model_ref) = MODEL.get().cloned() else {
+    let Some(model_ref) = model_by_key("tts") else {
         return error_json(StatusCode::SERVICE_UNAVAILABLE, "模型没有初始化");
     };
 
@@ -274,7 +274,7 @@ pub async fn handle_route(body: Bytes) -> Response {
         Err(message) => return error_json(StatusCode::BAD_REQUEST, message),
     };
 
-    let Some(model_ref) = MODEL.get() else {
+    let Some(model_ref) = model_by_key("laya") else {
         return error_json(StatusCode::SERVICE_UNAVAILABLE, "模型没有初始化");
     };
     let guard = model_ref.write().await;

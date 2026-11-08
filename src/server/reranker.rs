@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use crate::{
     params::rerank::{RerankRequest, RerankResponse, RerankResult},
-    server::{api::MODEL, error},
+    server::{api::stored_model, error},
 };
 
 fn validate_rerank_input(query: &str, documents: &[String]) -> anyhow::Result<()> {
@@ -35,7 +35,7 @@ pub(crate) async fn rerank(
         return error::invalid_request(e.to_string(), None, Some("invalid_input"));
     }
 
-    let model_ref = match MODEL.get().cloned() {
+    let model_ref = match stored_model() {
         Some(v) => v,
         None => return error::model_not_loaded(),
     };

@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::pin::pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -28,8 +29,20 @@ pub(crate) struct StoredModel {
     pub instance: ModelInstance<'static>,
 }
 
-// Export MODEL for use in ASR module
-pub(crate) static MODEL: OnceLock<Arc<RwLock<StoredModel>>> = OnceLock::new();
+/// 一个已加载模型的共享句柄（每个模型一把锁，不同模型可以并发）。
+pub(crate) type SharedModel = Arc<RwLock<StoredModel>>;
+
+/// 多模型注册表：key（桌宠角色 `asr`/`tts`/`laya`，或模型 id）→ 已加载的模型。
+///
+/// **一个进程可以同时服务多个模型**：桌宠的 `/asr` `/tts` `/route` 按角色取，
+/// OpenAI 端点按请求里的 `model` 字段取（不认识的走 `default`）。
+pub(crate) struct Registry {
+    models: HashMap<String, SharedModel>,
+    /// OpenAI 端点没给 `model`（或给了不认识的）时的兜底键。
+    default: Option<String>,
+}
+
+static REGISTRY: OnceLock<Registry> = OnceLock::new();
 static SHUTDOWN_FLAG: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 static SERVER_PORT: OnceLock<u16> = OnceLock::new();
 static ALLOW_REMOTE_SHUTDOWN: OnceLock<bool> = OnceLock::new();
@@ -59,26 +72,47 @@ fn default_threads() -> i32 {
         .clamp(4, 8)
 }
 
-pub fn init(
-    model_type: WhichModel,
-    path: String,
-    gguf: Option<String>,
-    mmproj: Option<String>,
-    opts: &InitOptions,
-) -> anyhow::Result<()> {
-    let model = if model_type.is_gguf() {
-        if let Some(gguf_path) = gguf {
-            let gguf_path = string_to_static_str(gguf_path);
-            let mmproj_path = mmproj.map(string_to_static_str);
-            load_gguf_model(model_type, None, gguf_path, mmproj_path, None)?
-        } else {
+/// 一个待加载模型的"配方"。
+#[derive(Debug, Clone)]
+pub struct ModelSpec {
+    /// 注册键：桌宠角色（`asr` / `tts` / `laya`）或模型 id。
+    pub key: String,
+    pub model_type: WhichModel,
+    pub path: String,
+    pub gguf: Option<String>,
+    pub mmproj: Option<String>,
+}
+
+impl ModelSpec {
+    pub fn new(key: impl Into<String>, model_type: WhichModel, path: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            model_type,
+            path: path.into(),
+            gguf: None,
+            mmproj: None,
+        }
+    }
+}
+
+/// 加载一个模型（不碰注册表）。Laya 需要设备校验 + 自定义门控/超时，走自己的路径。
+fn load_one(spec: &ModelSpec, opts: &InitOptions) -> anyhow::Result<StoredModel> {
+    let model_type = spec.model_type;
+    let path = spec.path.clone();
+    let instance = if model_type.is_gguf() {
+        let Some(gguf_path) = spec.gguf.clone() else {
             return Err(anyhow!("gguf model need gguf model path"));
+        };
+        let gguf_path = string_to_static_str(gguf_path);
+        let mmproj_path = spec.mmproj.clone().map(string_to_static_str);
+        StoredModel {
+            which_model: model_type,
+            instance: load_gguf_model(model_type, None, gguf_path, mmproj_path, None)?,
         }
     } else if model_type.is_onnx() && !model_type.is_pet_delegated_model() {
         // 桌宠三个模型走 sherpa/sys1，不进 onnx 门禁（SenseVoice 的 id 里就带 "onnx"）
         return Err(anyhow!("onnx comming soon but now not support"));
     } else {
-        // Laya 需要设备校验 + 自定义门控/超时，走自己的加载路径。
         #[cfg(feature = "laya")]
         if model_type.is_laya_model() {
             aha::models::laya::check_device(&opts.device)?;
@@ -92,13 +126,10 @@ pub fn init(
                 opts.request_timeout_ms,
                 opts.threads,
             )?;
-            MODEL.get_or_init(|| {
-                Arc::new(RwLock::new(StoredModel {
-                    which_model: model_type,
-                    instance: ModelInstance::Laya(model),
-                }))
+            return Ok(StoredModel {
+                which_model: model_type,
+                instance: ModelInstance::Laya(model),
             });
-            return Ok(());
         }
         let threads = if opts.threads > 0 {
             opts.threads
@@ -106,16 +137,138 @@ pub fn init(
             default_threads()
         };
         let model_path = string_to_static_str(path);
-        load_model(model_type, model_path, None, None, threads)?
-    };
-
-    MODEL.get_or_init(|| {
-        Arc::new(RwLock::new(StoredModel {
+        StoredModel {
             which_model: model_type,
-            instance: model,
-        }))
+            instance: load_model(model_type, model_path, None, None, threads)?,
+        }
+    };
+    Ok(instance)
+}
+
+/// 单模型 `serv` / `cli`：注册成模型 id，并作为 OpenAI 端点的默认。
+pub fn init(
+    model_type: WhichModel,
+    path: String,
+    gguf: Option<String>,
+    mmproj: Option<String>,
+    opts: &InitOptions,
+) -> anyhow::Result<()> {
+    let mut spec = ModelSpec::new(model_type.as_string(), model_type, path);
+    spec.gguf = gguf;
+    spec.mmproj = mmproj;
+    init_multi(vec![spec], opts)
+}
+
+/// 这个 spec 是不是 Laya（加载时会 `tokio::spawn`，需要运行时上下文）。
+fn is_laya_spec(spec: &ModelSpec) -> bool {
+    #[cfg(feature = "laya")]
+    {
+        spec.model_type.is_laya_model()
+    }
+    #[cfg(not(feature = "laya"))]
+    {
+        let _ = spec;
+        false
+    }
+}
+
+/// 多模型：并发加载，单个角色失败只记日志（不拖垮其它角色）；全部失败才报错。
+/// 第一个成功加载的作为 OpenAI 端点（没给 `model` 时）的默认。
+///
+/// 注意：Laya 的 `Batcher` 在加载阶段会 `tokio::spawn`，所以它**必须在调用方的
+/// tokio 运行时线程上加载**（`init_multi` 的调用方都是 `#[tokio::main]` 里的 async fn）；
+/// 其余模型没有这个约束，用线程并发加载。
+pub fn init_multi(specs: Vec<ModelSpec>, opts: &InitOptions) -> anyhow::Result<()> {
+    let mut loaded: Vec<(String, String, StoredModel)> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
+
+    let (on_runtime, concurrent): (Vec<ModelSpec>, Vec<ModelSpec>) =
+        specs.into_iter().partition(is_laya_spec);
+
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = concurrent
+            .iter()
+            .map(|spec| {
+                scope.spawn(move || {
+                    (
+                        spec.key.clone(),
+                        spec.model_type.as_string(),
+                        load_one(spec, opts),
+                    )
+                })
+            })
+            .collect();
+        for handle in handles {
+            match handle.join() {
+                Ok((key, id, Ok(model))) => loaded.push((key, id, model)),
+                Ok((key, id, Err(error))) => failures.push(format!("{key}({id}): {error:#}")),
+                Err(_) => failures.push("加载线程 panic".to_string()),
+            }
+        }
     });
+
+    // Laya：留在当前线程，保证 `tokio::spawn` 有运行时。
+    for spec in &on_runtime {
+        let key = spec.key.clone();
+        let id = spec.model_type.as_string();
+        match load_one(spec, opts) {
+            Ok(model) => loaded.push((key, id, model)),
+            Err(error) => failures.push(format!("{key}({id}): {error:#}")),
+        }
+    }
+
+    for failure in &failures {
+        eprintln!("[models] 加载失败：{failure}");
+    }
+    if loaded.is_empty() {
+        return Err(anyhow!("所有模型都没加载成功：{}", failures.join("；")));
+    }
+
+    let default = loaded.first().map(|(key, _, _)| key.clone());
+    let mut models: HashMap<String, SharedModel> = HashMap::new();
+    for (key, id, model) in loaded {
+        let shared: SharedModel = Arc::new(RwLock::new(model));
+        // 角色键（asr/tts/laya）和模型 id 都指向同一个实例
+        models.entry(key).or_insert_with(|| Arc::clone(&shared));
+        models.entry(id).or_insert(shared);
+    }
+    REGISTRY
+        .set(Registry { models, default })
+        .map_err(|_| anyhow!("模型注册表已经初始化过"))?;
     Ok(())
+}
+
+/// 按 key（角色或模型 id）取已加载的模型。
+pub(crate) fn model_by_key(key: &str) -> Option<SharedModel> {
+    REGISTRY.get()?.models.get(key).cloned()
+}
+
+/// 按请求里的 `model` 字段取模型；没给/不认识时回落到默认。
+pub(crate) fn model_for(name: Option<&str>) -> Option<SharedModel> {
+    let registry = REGISTRY.get()?;
+    if let Some(name) = name {
+        if !name.is_empty() {
+            if let Some(model) = registry.models.get(name) {
+                return Some(model.clone());
+            }
+        }
+    }
+    registry
+        .default
+        .as_ref()
+        .and_then(|key| registry.models.get(key).cloned())
+}
+
+/// 当前进程里已加载的 key（角色 + 模型 id），给 `/health` 和 `/models` 用。
+pub(crate) fn loaded_keys() -> Vec<String> {
+    REGISTRY
+        .get()
+        .map(|r| {
+            let mut keys: Vec<String> = r.models.keys().cloned().collect();
+            keys.sort();
+            keys
+        })
+        .unwrap_or_default()
 }
 
 pub fn set_server_port(port: u16, allow_remote_shutdown: bool) {
@@ -145,8 +298,9 @@ where
         .expect("failed to build streaming response")
 }
 
-fn stored_model() -> Option<Arc<RwLock<StoredModel>>> {
-    MODEL.get().cloned()
+/// 默认模型（OpenAI 端点没给 `model` 时用）。
+pub(crate) fn stored_model() -> Option<SharedModel> {
+    model_for(None)
 }
 
 pub(crate) async fn chat(
@@ -162,7 +316,7 @@ pub(crate) async fn chat(
     match req.stream {
         Some(false) => {
             let response = {
-                let Some(model_ref) = stored_model() else {
+                let Some(model_ref) = model_for(Some(&req.model)) else {
                     return error::model_not_loaded().into_response();
                 };
                 let mut guard = model_ref.write().await;
@@ -179,8 +333,9 @@ pub(crate) async fn chat(
             }
         }
         _ => {
+            let model_key = req.model.clone();
             let text_stream = async_stream::stream! {
-                let Some(model_ref) = MODEL.get().cloned() else {
+                let Some(model_ref) = model_for(Some(&model_key)) else {
                     yield "event: error\ndata: model not init\n\n".to_string();
                     return;
                 };
@@ -224,7 +379,7 @@ pub(crate) async fn remove_background(
         }
     };
     let response = {
-        let Some(model_ref) = stored_model() else {
+        let Some(model_ref) = model_for(Some(&req.model)) else {
             return error::model_not_loaded().into_response();
         };
         let mut guard = model_ref.write().await;
@@ -251,7 +406,7 @@ pub(crate) async fn speech(
         }
     };
     let response = {
-        let Some(model_ref) = stored_model() else {
+        let Some(model_ref) = model_for(Some(&req.model)) else {
             return error::model_not_loaded().into_response();
         };
         let mut guard = model_ref.write().await;
@@ -275,21 +430,27 @@ pub(crate) struct HealthResponse {
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    /// 已加载的角色/模型 key（桌宠据此判断"这一路好了没"）。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    models: Vec<String>,
 }
 
 pub(crate) async fn health() -> (StatusCode, Json<HealthResponse>) {
-    if MODEL.get().is_some() {
-        let response = HealthResponse {
-            status: "ok".to_string(),
-            error: None,
-        };
-        (StatusCode::OK, Json(response))
-    } else {
+    let models = loaded_keys();
+    if models.is_empty() {
         let response = HealthResponse {
             status: "unhealthy".to_string(),
             error: Some("model not initialized".to_string()),
+            models,
         };
         (StatusCode::SERVICE_UNAVAILABLE, Json(response))
+    } else {
+        let response = HealthResponse {
+            status: "ok".to_string(),
+            error: None,
+            models,
+        };
+        (StatusCode::OK, Json(response))
     }
 }
 
@@ -312,29 +473,34 @@ struct ModelsListResponse {
 }
 
 pub(crate) async fn models() -> (StatusCode, Json<serde_json::Value>) {
-    if let Some(model_ref) = MODEL.get() {
+    let Some(registry) = REGISTRY.get() else {
+        return error::model_not_loaded();
+    };
+    let mut seen = HashSet::new();
+    let mut data = Vec::new();
+    for model_ref in registry.models.values() {
         let guard = model_ref.read().await;
         let which_model = guard.which_model;
-
-        let model_obj = ModelObject {
+        drop(guard);
+        // 角色键和模型 id 指向同一实例，按 id 去重
+        if !seen.insert(which_model.as_string()) {
+            continue;
+        }
+        data.push(ModelObject {
             id: which_model.as_string(),
             object: "model".to_string(),
             created: None, // We don't track creation time
             owned_by: which_model.model_owner(),
-        };
-        drop(guard);
-
-        let response = ModelsListResponse {
-            object: "list".to_string(),
-            data: vec![model_obj],
-        };
-        (
-            StatusCode::OK,
-            Json(serde_json::to_value(response).unwrap()),
-        )
-    } else {
-        error::model_not_loaded()
+        });
     }
+    let response = ModelsListResponse {
+        object: "list".to_string(),
+        data,
+    };
+    (
+        StatusCode::OK,
+        Json(serde_json::to_value(response).unwrap()),
+    )
 }
 
 // Shutdown endpoint

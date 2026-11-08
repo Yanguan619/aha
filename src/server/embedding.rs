@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use crate::{
     params::embedding::{EmbeddingData, EmbeddingRequest, EmbeddingResponse},
-    server::{api::MODEL, error},
+    server::{api::stored_model, error},
 };
 
 fn parse_embedding_input(input: &Value) -> anyhow::Result<Vec<String>> {
@@ -44,7 +44,7 @@ pub(crate) async fn embeddings(
             return error::invalid_request(e.to_string(), Some("input"), Some("invalid_input"));
         }
     };
-    let model_ref = match MODEL.get().cloned() {
+    let model_ref = match stored_model() {
         Some(v) => v,
         None => return error::model_not_loaded(),
     };

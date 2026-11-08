@@ -17,7 +17,7 @@ use axum::{
 use uuid::Uuid;
 
 use crate::params::asr::{TranscriptionRequest, TranscriptionResponse};
-use crate::server::api::MODEL;
+use crate::server::api::{model_by_key, model_for};
 use crate::server::error;
 
 /// Temporary audio file written from the multipart body.
@@ -196,8 +196,10 @@ pub(crate) async fn transcriptions(
         ..Default::default()
     };
 
-    // Get the model and generate transcription
-    let Some(model_ref) = MODEL.get() else {
+    // Get the model and generate transcription：优先角色 key（asr），否则按请求里的 model
+    let Some(model_ref) =
+        model_by_key("asr").or_else(|| model_for(params.model.as_deref()))
+    else {
         return error::model_not_loaded();
     };
 

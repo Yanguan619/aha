@@ -1,11 +1,12 @@
 use crate::{
     cli::args::{
-        CliArgs, DeleteArgs, DownloadArgs, ListArgs, ProbeArgs, RunArgs, ServArgs, ServListArgs,
+        CliArgs, DeleteArgs, DownloadArgs, ListArgs, MultiArgs, ProbeArgs, RunArgs, ServArgs,
+        ServListArgs,
     },
     server::{
-        api::{InitOptions, init},
+        api::{InitOptions, ModelSpec, init, init_multi},
         process::{ServiceStatus, find_aha_services},
-        start_http_server,
+        start_http_server, start_http_server_multi,
     },
 };
 use aha::exec::*;
@@ -221,6 +222,95 @@ pub(crate) async fn run_serv(args: ServArgs) -> anyhow::Result<()> {
     )
     .await?;
 
+    Ok(())
+}
+
+/// Run the 'multi' subcommand: 一个进程服务多个模型（桌宠 asr/tts/laya）。
+pub(crate) async fn run_multi(args: MultiArgs) -> anyhow::Result<()> {
+    let MultiArgs {
+        asr,
+        tts,
+        laya,
+        laya_path,
+        asr_port,
+        tts_port,
+        laya_port,
+        server_common,
+        pet,
+    } = args;
+
+    let mut specs: Vec<ModelSpec> = Vec::new();
+
+    #[cfg(feature = "sherpa")]
+    {
+        if let Some(dir) = asr.as_deref() {
+            tracing::info!(dir = %dir, role = "asr", "检查 sherpa 模型文件");
+            aha::models::common::sherpa::ensure_downloaded(dir, WhichModel::SenseVoice)?;
+            specs.push(ModelSpec::new("asr", WhichModel::SenseVoice, dir));
+        }
+        if let Some(dir) = tts.as_deref() {
+            tracing::info!(dir = %dir, role = "tts", "检查 sherpa 模型文件");
+            aha::models::common::sherpa::ensure_downloaded(dir, WhichModel::Kokoro)?;
+            specs.push(ModelSpec::new("tts", WhichModel::Kokoro, dir));
+        }
+    }
+    #[cfg(not(feature = "sherpa"))]
+    if asr.is_some() || tts.is_some() {
+        return Err(anyhow!("这个二进制没编 sherpa 特性，不能启用 asr/tts 角色"));
+    }
+
+    #[cfg(feature = "laya")]
+    if laya || laya_path.is_some() {
+        let (path, source) =
+            aha::models::laya::resolve(laya_path.as_deref(), &WhichModel::Laya.as_string()).await?;
+        tracing::info!(dir = %path.display(), source, "Laya 模型目录就绪");
+        specs.push(ModelSpec::new(
+            "laya",
+            WhichModel::Laya,
+            path.display().to_string(),
+        ));
+    }
+    #[cfg(not(feature = "laya"))]
+    if laya || laya_path.is_some() {
+        return Err(anyhow!("这个二进制没编 laya 特性，不能启用 laya 角色"));
+    }
+
+    if specs.is_empty() {
+        return Err(anyhow!(
+            "multi 至少要启用一个角色（--asr <dir> / --tts <dir> / --laya）"
+        ));
+    }
+
+    // 每个角色绑自己的端口（同一个进程、同一套路由/注册表）。
+    let mut ports: Vec<u16> = Vec::new();
+    for spec in &specs {
+        let port = match spec.key.as_str() {
+            "asr" => asr_port,
+            "tts" => tts_port,
+            "laya" => laya_port,
+            _ => server_common.port,
+        };
+        if !ports.contains(&port) {
+            ports.push(port);
+        }
+    }
+
+    init_multi(
+        specs,
+        &InitOptions {
+            device: pet.device,
+            min_confidence: pet.min_confidence,
+            request_timeout_ms: pet.request_timeout_ms,
+            threads: pet.threads,
+        },
+    )?;
+    start_http_server_multi(
+        server_common.address,
+        ports,
+        server_common.allow_remote_shutdown,
+        server_common.parent_pid,
+    )
+    .await?;
     Ok(())
 }
 
