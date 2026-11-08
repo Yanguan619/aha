@@ -229,15 +229,6 @@ pub(crate) struct MultiArgs {
     /// Laya 模型目录（不给则先找 HF 缓存，再下载）
     #[arg(long)]
     pub laya_path: Option<String>,
-    /// ASR 角色监听端口（启用 --asr 时生效）
-    #[arg(long, default_value_t = 8771)]
-    pub asr_port: u16,
-    /// TTS 角色监听端口（启用 --tts 时生效）
-    #[arg(long, default_value_t = 8770)]
-    pub tts_port: u16,
-    /// Laya 角色监听端口（启用 --laya 时生效）
-    #[arg(long, default_value_t = 8772)]
-    pub laya_port: u16,
 
     #[command(flatten)]
     pub server_common: ServerCommonArgs,

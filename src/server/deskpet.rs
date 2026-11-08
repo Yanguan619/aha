@@ -1,20 +1,22 @@
 //! 桌宠（desktop-pet）契约端点。
 //!
-//! 桌宠把语音/听力/决策三条 Rust 链路都委托给 aha：同一个进程、同一个 `aha.exe`，
-//! 按 `--model` 各起一个实例。这里的三个端点是桌宠 Go 侧**原有 HTTP 契约**的
-//! 等价实现（换的是运行时，不是契约）：
+//! 桌宠把语音/听力/决策三条 Rust 链路都委托给 aha：一个 `aha multi` 进程按角色服务
+//! 多个模型。这里的端点是桌宠 Go 侧**原有 HTTP 契约**的等价实现（换的是运行时，不是契约）：
 //!
 //! ```text
-//! POST /asr    raw PCM16LE 16k mono  -> {text,dur_ms,took_ms}
-//! POST /tts    {"text","voice"?,"speed"?} -> audio/wav (24kHz mono PCM16)
-//! POST /route  {"text"} -> {target,choice,confidence,reason,text}
+//! POST /v1/asr        raw PCM16LE 16k mono  -> {text,dur_ms,took_ms}
+//! POST /v1/tts        {"text","voice"?,"speed"?} -> audio/wav (24kHz mono PCM16)
+//! POST /v1/tts/stream {"text","voice"?,"speed"?} -> raw PCM16LE
+//! POST /v1/decisions  {"text"} -> {target,choice,confidence,reason,text}
 //! ```
 //!
-//! 和 aha 的 OpenAI 风格错误包不同，这三个端点失败时回 `{"error":"..."}` 的**顶层字符串**——
+//! `/v1/decisions` 由 `laya`（System-1 类决策模型）提供。
+//!
+//! 和 aha 的 OpenAI 风格错误包不同，这些端点失败时回 `{"error":"..."}` 的**顶层字符串**——
 //! 桌宠 Go 侧解析成功体、出错只读原始 body 文本，两种都兼容，但顶层字符串最稳妥。
 //!
-//! 三个模型都不是并发安全的，所以处理器拿的是 **写锁**（和 `/chat` 同一条锁），
-//! 一次只放一个请求进推理。
+//! 每个模型有自己的一把写锁（见 `api::registry`）：三个角色可以并发，但同一模型
+//! 一次只放一个请求进推理（sherpa/sys1 都不是并发安全的）。
 
 #[cfg(feature = "sherpa")]
 use std::time::Instant;
@@ -39,7 +41,7 @@ const ASR_MIN_SAMPLES: usize = 16_000 / 10;
 const TTS_MAX_BODY: usize = 64 * 1024;
 
 // --------------------------------------------------------------------------- //
-// POST /asr —— 裸 PCM16LE 16k 单声道
+// POST /v1/asr —— 裸 PCM16LE 16k 单声道
 // --------------------------------------------------------------------------- //
 
 #[cfg(feature = "sherpa")]
@@ -115,7 +117,7 @@ fn check_asr_request(headers: &HeaderMap, len: usize) -> Option<String> {
 }
 
 // --------------------------------------------------------------------------- //
-// POST /tts —— {text,voice?,speed?} → audio/wav
+// POST /v1/tts —— {text,voice?,speed?} → audio/wav
 // --------------------------------------------------------------------------- //
 
 #[cfg(feature = "sherpa")]
@@ -129,7 +131,7 @@ struct TtsRequest {
     speed: Option<f32>,
 }
 
-/// 解析 `/tts` 和 `/tts/stream` 共用的请求体。
+/// 解析 `/v1/tts` 和 `/v1/tts/stream` 共用的请求体。
 ///
 /// 错误直接返回 `Response`（`clippy::result_large_err`：为了省一次 match 不理它）。
 #[cfg(feature = "sherpa")]
@@ -192,7 +194,7 @@ pub async fn handle_tts(body: Bytes) -> Response {
     }
 }
 
-/// `POST /tts/stream` —— 边合成边吐裸 PCM16LE，桌宠 `mouth.speakStream` 用它边收边播。
+/// `POST /v1/tts/stream` —— 边合成边吐裸 PCM16LE，桌宠 `mouth.speakStream` 用它边收边播。
 ///
 /// 响应头：`X-Audio-Rate`（模型自报，Kokoro 是 24k）、`X-Audio-Channels: 1`。
 /// body：PCM16LE 小端，无 WAV 头。
@@ -264,7 +266,7 @@ pub async fn handle_tts_stream(body: Bytes) -> Response {
 }
 
 // --------------------------------------------------------------------------- //
-// POST /route —— {text} → {target,choice,confidence,reason,text}
+// POST /v1/decisions —— {text} → {target,choice,confidence,reason,text}
 // --------------------------------------------------------------------------- //
 
 #[cfg(feature = "laya")]

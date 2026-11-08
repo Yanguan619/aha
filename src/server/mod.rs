@@ -33,25 +33,8 @@ pub(crate) async fn start_http_server(
     allow_remote_shutdown: bool,
     parent_pid: u32,
 ) -> anyhow::Result<()> {
-    start_http_server_multi(address, vec![port], allow_remote_shutdown, parent_pid).await
-}
-
-/// 在多个端口上监听**同一套路由/同一个模型注册表**（`multi` 用：每个角色一个端口）。
-///
-/// 桌宠的三个地址（tts/asr/laya）保持不变，但背后是同一个进程——省掉三套进程/DLL/
-/// 生命周期。端口都绑回环，和单端口版本一样带 `--parent-pid` 看门狗。
-pub(crate) async fn start_http_server_multi(
-    address: String,
-    ports: Vec<u16>,
-    allow_remote_shutdown: bool,
-    parent_pid: u32,
-) -> anyhow::Result<()> {
-    let Some(&first_port) = ports.first() else {
-        return Err(anyhow::anyhow!("没有要监听的端口"));
-    };
-
     // Set server port for shutdown endpoint
-    set_server_port(first_port, allow_remote_shutdown);
+    set_server_port(port, allow_remote_shutdown);
 
     // 桌宠委托模式：父进程（pet.exe）一死就跟着退出，别留孤儿占着端口。
     // 和旧 asr-route / tts-route / laya-route 的 --parent-pid 看门狗同一个约定。
@@ -59,58 +42,39 @@ pub(crate) async fn start_http_server_multi(
         process::watch_parent(parent_pid);
     }
 
-    // Create PID files for service tracking（每个端口一个）
+    // Create PID file for service tracking
     let pid = std::process::id();
-    for &port in &ports {
-        create_pid_file(pid, port)?;
-    }
+    create_pid_file(pid, port)?;
 
     // Set up shutdown flag
     let shutdown_flag = Arc::new(AtomicBool::new(false));
+    let shutdown_flag_clone = shutdown_flag.clone();
 
     // Configure Ctrl+C handler for graceful shutdown
-    let ports_for_cleanup = ports.clone();
-    let shutdown_flag_clone = shutdown_flag.clone();
     let shutdown_handler = tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
         println!("Received shutdown signal, gracefully shutting down...");
         shutdown_flag_clone.store(true, Ordering::SeqCst);
         // Give time for existing requests to complete
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        for &port in &ports_for_cleanup {
-            let _ = cleanup_pid_file(port);
-        }
+        // Cleanup PID file
+        let _ = cleanup_pid_file(port);
         std::process::exit(0);
     });
 
     let app = build_router(shutdown_flag);
 
     let ip = IpAddr::from_str(&address)?;
-    let mut listeners = Vec::with_capacity(ports.len());
-    for &port in &ports {
-        listeners.push(tokio::net::TcpListener::bind((ip, port)).await?);
-    }
+    let listener = tokio::net::TcpListener::bind((ip, port)).await?;
 
-    // 每个端口一个 serve 任务，共享同一个 app（Router 是 Clone）。
-    let mut tasks = Vec::with_capacity(listeners.len());
-    for listener in listeners {
-        let app = app.clone();
-        tasks.push(tokio::spawn(async move {
-            axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            )
-            .await
-        }));
-    }
-    for task in tasks {
-        let _ = task.await;
-    }
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
 
-    // Cleanup PID files when server exits
-    for &port in &ports {
-        let _ = cleanup_pid_file(port);
-    }
+    // Cleanup PID file when server exits
+    cleanup_pid_file(port)?;
     shutdown_handler.abort();
 
     Ok(())
@@ -151,15 +115,16 @@ fn build_router(shutdown_flag: Arc<AtomicBool>) -> Router {
             post(asr::transcriptions).layer(DefaultBodyLimit::max(MULTIPART_BODY_LIMIT)),
         );
 
-    // 桌宠契约：/asr（裸 PCM16LE）、/tts（WAV）、/tts/stream（PCM 流）由 sherpa 后端提供，
-    // /route（Laya 决策）由 laya 后端提供；没开对应 feature 时这些端点不存在。
+    // 桌宠契约：/v1/asr（裸 PCM16LE）、/v1/tts（WAV）、/v1/tts/stream（PCM 流）
+    // 由 sherpa 后端提供，/v1/decisions（Laya 决策，System-1 类模型）由 laya 后端提供；
+    // 没开对应 feature 时这些端点不存在。
     #[cfg(feature = "sherpa")]
     let app = app
-        .route("/asr", post(deskpet::handle_asr))
-        .route("/tts", post(deskpet::handle_tts))
-        .route("/tts/stream", post(deskpet::handle_tts_stream));
+        .route("/v1/asr", post(deskpet::handle_asr))
+        .route("/v1/tts", post(deskpet::handle_tts))
+        .route("/v1/tts/stream", post(deskpet::handle_tts_stream));
     #[cfg(feature = "laya")]
-    let app = app.route("/route", post(deskpet::handle_route));
+    let app = app.route("/v1/decisions", post(deskpet::handle_route));
 
     app
         // Unknown routes and wrong methods also answer with the OpenAI error envelope

@@ -159,6 +159,18 @@ impl WhichModel {
         false
     }
 
+    /// 对外展示的模型名（OpenAI `/v1/models` 用）。
+    ///
+    /// Laya 的仓库 id 是 `convaiinnovations/laya-multilingual`（下载要用它），
+    /// 但对调用方它就是 **`laya`**——一个 System-1 类决策模型。
+    pub fn display_name(&self) -> String {
+        #[cfg(feature = "laya")]
+        if self.is_laya_model() {
+            return "laya".to_string();
+        }
+        self.as_string()
+    }
+
     /// Get the WhichModel enum list
     pub fn model_list() -> Vec<Self> {
         WhichModel::value_variants().to_vec()
@@ -234,7 +246,7 @@ impl WhichModel {
             #[cfg(feature = "sherpa")]
             WhichModel::Kokoro => "tts",
             #[cfg(feature = "laya")]
-            WhichModel::Laya => "route",
+            WhichModel::Laya => "system1",
         }
     }
 }

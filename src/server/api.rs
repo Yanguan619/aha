@@ -172,6 +172,23 @@ fn is_laya_spec(spec: &ModelSpec) -> bool {
     }
 }
 
+/// 模型类型 → 桌宠角色。单模型 `serv --model <x>` 也直接暴露 `/v1/asr` 之类的角色端点。
+fn role_of(model: WhichModel) -> Option<&'static str> {
+    #[cfg(feature = "sherpa")]
+    if model.is_sherpa_model() {
+        return match model {
+            WhichModel::SenseVoice => Some("asr"),
+            WhichModel::Kokoro => Some("tts"),
+            _ => None,
+        };
+    }
+    #[cfg(feature = "laya")]
+    if model.is_laya_model() {
+        return Some("laya");
+    }
+    None
+}
+
 /// 多模型：并发加载，单个角色失败只记日志（不拖垮其它角色）；全部失败才报错。
 /// 第一个成功加载的作为 OpenAI 端点（没给 `model` 时）的默认。
 ///
@@ -227,10 +244,15 @@ pub fn init_multi(specs: Vec<ModelSpec>, opts: &InitOptions) -> anyhow::Result<(
     let default = loaded.first().map(|(key, _, _)| key.clone());
     let mut models: HashMap<String, SharedModel> = HashMap::new();
     for (key, id, model) in loaded {
+        let which = model.which_model;
+        let role = role_of(which);
         let shared: SharedModel = Arc::new(RwLock::new(model));
-        // 角色键（asr/tts/laya）和模型 id 都指向同一个实例
+        // 角色键（asr/tts/laya）、模型 id、按类型推导的角色，都指向同一个实例
         models.entry(key).or_insert_with(|| Arc::clone(&shared));
-        models.entry(id).or_insert(shared);
+        models.entry(id).or_insert_with(|| Arc::clone(&shared));
+        if let Some(role) = role {
+            models.entry(role.to_string()).or_insert(shared);
+        }
     }
     REGISTRY
         .set(Registry { models, default })
@@ -482,12 +504,12 @@ pub(crate) async fn models() -> (StatusCode, Json<serde_json::Value>) {
         let guard = model_ref.read().await;
         let which_model = guard.which_model;
         drop(guard);
-        // 角色键和模型 id 指向同一实例，按 id 去重
-        if !seen.insert(which_model.as_string()) {
+        // 角色键和模型 id 指向同一实例，按展示名去重
+        if !seen.insert(which_model.display_name()) {
             continue;
         }
         data.push(ModelObject {
-            id: which_model.as_string(),
+            id: which_model.display_name(),
             object: "model".to_string(),
             created: None, // We don't track creation time
             owned_by: which_model.model_owner(),

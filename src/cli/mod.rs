@@ -6,7 +6,7 @@ use crate::{
     server::{
         api::{InitOptions, ModelSpec, init, init_multi},
         process::{ServiceStatus, find_aha_services},
-        start_http_server, start_http_server_multi,
+        start_http_server,
     },
 };
 use aha::exec::*;
@@ -232,9 +232,6 @@ pub(crate) async fn run_multi(args: MultiArgs) -> anyhow::Result<()> {
         tts,
         laya,
         laya_path,
-        asr_port,
-        tts_port,
-        laya_port,
         server_common,
         pet,
     } = args;
@@ -281,20 +278,6 @@ pub(crate) async fn run_multi(args: MultiArgs) -> anyhow::Result<()> {
         ));
     }
 
-    // 每个角色绑自己的端口（同一个进程、同一套路由/注册表）。
-    let mut ports: Vec<u16> = Vec::new();
-    for spec in &specs {
-        let port = match spec.key.as_str() {
-            "asr" => asr_port,
-            "tts" => tts_port,
-            "laya" => laya_port,
-            _ => server_common.port,
-        };
-        if !ports.contains(&port) {
-            ports.push(port);
-        }
-    }
-
     init_multi(
         specs,
         &InitOptions {
@@ -304,9 +287,10 @@ pub(crate) async fn run_multi(args: MultiArgs) -> anyhow::Result<()> {
             threads: pet.threads,
         },
     )?;
-    start_http_server_multi(
+    // 三条角色的路径不同（/v1/asr、/v1/tts、/v1/decisions），一个端口就够。
+    start_http_server(
         server_common.address,
-        ports,
+        server_common.port,
         server_common.allow_remote_shutdown,
         server_common.parent_pid,
     )
