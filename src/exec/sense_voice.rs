@@ -6,7 +6,7 @@ use anyhow::{Ok, Result};
 
 use crate::exec::ExecModel;
 use crate::models::GenerateModel;
-use crate::models::sherpa::SenseVoiceModel;
+use crate::models::sense_voice::SenseVoiceModel;
 
 pub struct SenseVoiceExec;
 

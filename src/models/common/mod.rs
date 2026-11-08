@@ -7,6 +7,8 @@ pub mod model_mapping;
 pub mod modules;
 pub mod reranker;
 pub mod sample;
+#[cfg(feature = "sherpa")]
+pub mod sherpa;
 
 /// 多模态模型的特征数据
 /// 每个模型数据不一样

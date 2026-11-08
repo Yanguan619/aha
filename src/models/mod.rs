@@ -8,6 +8,8 @@ pub mod fun_asr_nano;
 pub mod glm_asr_nano;
 pub mod glm_ocr;
 pub mod hunyuan_ocr;
+#[cfg(feature = "sherpa")]
+pub mod kokoro;
 #[cfg(feature = "laya")]
 pub mod laya;
 pub mod lfm2;
@@ -28,7 +30,7 @@ pub mod qwen3_reranker;
 pub mod qwen3vl;
 pub mod rmbg2_0;
 #[cfg(feature = "sherpa")]
-pub mod sherpa;
+pub mod sense_voice;
 pub mod voxcpm;
 pub mod voxcpm_refact;
 pub mod w2v_bert_2_0;
@@ -100,9 +102,9 @@ pub enum ModelInstance<'a> {
     FunASRNano(FunAsrNanoGenerateModel),
     GlmOCR(GlmOcrGenerateModel),
     #[cfg(feature = "sherpa")]
-    SenseVoice(crate::models::sherpa::SenseVoiceModel),
+    SenseVoice(crate::models::sense_voice::SenseVoiceModel),
     #[cfg(feature = "sherpa")]
-    Kokoro(crate::models::sherpa::KokoroTtsModel),
+    Kokoro(crate::models::kokoro::KokoroTtsModel),
     #[cfg(feature = "laya")]
     Laya(crate::models::laya::LayaRouteModel),
 }
@@ -212,7 +214,7 @@ impl<'a> ModelInstance<'a> {
 
     /// 取 SenseVoice（只有加载了 sense-voice 时才有）。`/asr` 端点用它。
     #[cfg(feature = "sherpa")]
-    pub fn asr_model(&self) -> Option<&crate::models::sherpa::SenseVoiceModel> {
+    pub fn asr_model(&self) -> Option<&crate::models::sense_voice::SenseVoiceModel> {
         match self {
             ModelInstance::SenseVoice(model) => Some(model),
             _ => None,
@@ -221,7 +223,7 @@ impl<'a> ModelInstance<'a> {
 
     /// 取 Kokoro（只有加载了 kokoro 时才有）。`/tts` 端点用它。
     #[cfg(feature = "sherpa")]
-    pub fn tts_model(&self) -> Option<&crate::models::sherpa::KokoroTtsModel> {
+    pub fn tts_model(&self) -> Option<&crate::models::kokoro::KokoroTtsModel> {
         match self {
             ModelInstance::Kokoro(model) => Some(model),
             _ => None,
@@ -366,7 +368,7 @@ pub fn load_model<'a>(
         }
         #[cfg(feature = "sherpa")]
         WhichModel::SenseVoice => {
-            let model = crate::models::sherpa::SenseVoiceModel::init_from_dir(
+            let model = crate::models::sense_voice::SenseVoiceModel::init_from_dir(
                 path,
                 if threads > 0 { threads } else { 4 },
             )?;
@@ -374,10 +376,10 @@ pub fn load_model<'a>(
         }
         #[cfg(feature = "sherpa")]
         WhichModel::Kokoro => {
-            let model = crate::models::sherpa::KokoroTtsModel::init(
+            let model = crate::models::kokoro::KokoroTtsModel::init(
                 path,
                 if threads > 0 { threads } else { 4 },
-                crate::models::sherpa::kokoro::DEFAULT_SID,
+                crate::models::kokoro::DEFAULT_SID,
             )?;
             ModelInstance::Kokoro(model)
         }

@@ -6,7 +6,7 @@ use anyhow::{Ok, Result};
 
 use crate::exec::ExecModel;
 use crate::models::GenerateModel;
-use crate::models::sherpa::KokoroTtsModel;
+use crate::models::kokoro::KokoroTtsModel;
 use crate::utils::audio_utils::extract_and_save_audio_from_response;
 
 pub struct KokoroExec;
@@ -20,8 +20,7 @@ impl ExecModel for KokoroExec {
             .clone();
 
         let i_start = Instant::now();
-        let mut model =
-            KokoroTtsModel::init(weight_path, 4, crate::models::sherpa::kokoro::DEFAULT_SID)?;
+        let mut model = KokoroTtsModel::init(weight_path, 4, crate::models::kokoro::DEFAULT_SID)?;
         println!("Time elapsed in load model is: {:?}", i_start.elapsed());
 
         let message = serde_json::json!({

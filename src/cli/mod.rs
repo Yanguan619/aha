@@ -185,7 +185,7 @@ pub(crate) async fn run_serv(args: ServArgs) -> anyhow::Result<()> {
     #[cfg(feature = "sherpa")]
     if model.is_sherpa_model() {
         tracing::info!(dir = %model_path, model = %model.as_string(), "检查 sherpa 模型文件");
-        aha::models::sherpa::ensure_downloaded(&model_path, model)?;
+        aha::models::common::sherpa::ensure_downloaded(&model_path, model)?;
     }
     #[cfg(feature = "laya")]
     if model.is_laya_model() {

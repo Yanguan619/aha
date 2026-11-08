@@ -1,15 +1,10 @@
-//! Optional sherpa-onnx backends (SenseVoice ASR / Kokoro TTS).
+//! 桌宠委托模式下的大模型权重下载器（SenseVoice / Kokoro）。
 //!
-//! Enabled with `--features sherpa`.
+//! 模型权重**不进仓库、不提前下**，首次启动由服务自己按文件列表从 HF 镜像拉
+//! （移植自旧 asr-route / tts-route 的 `model.rs`，见 [`ensure_downloaded`]）。
 //!
-//! 桌宠委托模式：模型权重**不进仓库、不提前下**，首次启动由服务自己按文件列表从
-//! HF 镜像拉（移植自旧 asr-route / tts-route 的 `model.rs`，见 [`ensure_downloaded`]）。
-
-pub mod kokoro;
-pub mod sense_voice;
-
-pub use kokoro::KokoroTtsModel;
-pub use sense_voice::SenseVoiceModel;
+//! 这里只放"按仓库拉文件"的公共逻辑，具体推理实现分别在
+//! [`crate::models::sense_voice`] 和 [`crate::models::kokoro`]。
 
 use std::{
     fs::{self, File},
