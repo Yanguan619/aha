@@ -276,7 +276,7 @@ pub async fn handle_route(body: Bytes) -> Response {
         Err(message) => return error_json(StatusCode::BAD_REQUEST, message),
     };
 
-    let Some(model_ref) = model_by_key("laya") else {
+    let Some(model_ref) = model_by_key("system1").or_else(|| model_by_key("laya")) else {
         return error_json(StatusCode::SERVICE_UNAVAILABLE, "模型没有初始化");
     };
     let guard = model_ref.write().await;

@@ -172,7 +172,8 @@ fn is_laya_spec(spec: &ModelSpec) -> bool {
     }
 }
 
-/// 模型类型 → 桌宠角色。单模型 `serv --model <x>` 也直接暴露 `/v1/asr` 之类的角色端点。
+/// 模型类型 → 角色/类名（SenseVoice→asr、Kokoro→tts、Laya→system1）。
+/// `/v1/*` 端点按这个类名取模型；单模型 `serv --model <x>` 也会自动注册。
 fn role_of(model: WhichModel) -> Option<&'static str> {
     #[cfg(feature = "sherpa")]
     if model.is_sherpa_model() {
@@ -184,7 +185,7 @@ fn role_of(model: WhichModel) -> Option<&'static str> {
     }
     #[cfg(feature = "laya")]
     if model.is_laya_model() {
-        return Some("laya");
+        return Some("system1");
     }
     None
 }
@@ -246,10 +247,13 @@ pub fn init_multi(specs: Vec<ModelSpec>, opts: &InitOptions) -> anyhow::Result<(
     for (key, id, model) in loaded {
         let which = model.which_model;
         let role = role_of(which);
+        let display = which.display_name();
         let shared: SharedModel = Arc::new(RwLock::new(model));
-        // 角色键（asr/tts/laya）、模型 id、按类型推导的角色，都指向同一个实例
+        // 显式 key（角色/类名或模型 id）、模型仓库 id、展示名、按类型推导的类名，
+        // 都指向同一个实例。
         models.entry(key).or_insert_with(|| Arc::clone(&shared));
         models.entry(id).or_insert_with(|| Arc::clone(&shared));
+        models.entry(display).or_insert_with(|| Arc::clone(&shared));
         if let Some(role) = role {
             models.entry(role.to_string()).or_insert(shared);
         }

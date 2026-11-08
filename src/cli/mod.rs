@@ -262,7 +262,7 @@ pub(crate) async fn run_multi(args: MultiArgs) -> anyhow::Result<()> {
             aha::models::laya::resolve(laya_path.as_deref(), &WhichModel::Laya.as_string()).await?;
         tracing::info!(dir = %path.display(), source, "Laya 模型目录就绪");
         specs.push(ModelSpec::new(
-            "laya",
+            "system1",
             WhichModel::Laya,
             path.display().to_string(),
         ));
