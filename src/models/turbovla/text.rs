@@ -4,7 +4,8 @@
 //! TurboVLA 用 `[CLS]`/`[SEP]`/`.`/`?` 把指令切成子句，每段独立位置编码、段内全连接。
 
 use candle_core::{DType, Device, Module, Result, Tensor};
-use candle_nn::{Embedding, LayerNorm, LayerNormConfig, Linear, VarBuilder};
+use candle_nn::{Embedding, LayerNorm, LayerNormConfig, VarBuilder};
+use super::linear::{linear, Linear};
 use tokenizers::{Tokenizer, TruncationParams};
 
 use super::config::BertConfig;
@@ -49,17 +50,17 @@ impl BertEncoder {
             let vb_l = vb.pp(format!("encoder.layer.{i}"));
             let vb_a = vb_l.pp("attention");
             layers.push(BertLayer {
-                q: candle_nn::linear(h, h, vb_a.pp("self").pp("query"))?,
-                k: candle_nn::linear(h, h, vb_a.pp("self").pp("key"))?,
-                v: candle_nn::linear(h, h, vb_a.pp("self").pp("value"))?,
-                o: candle_nn::linear(h, h, vb_a.pp("output").pp("dense"))?,
+                q: linear(h, h, vb_a.pp("self").pp("query"))?,
+                k: linear(h, h, vb_a.pp("self").pp("key"))?,
+                v: linear(h, h, vb_a.pp("self").pp("value"))?,
+                o: linear(h, h, vb_a.pp("output").pp("dense"))?,
                 attn_ln: candle_nn::layer_norm(
                     h,
                     LayerNormConfig { eps: cfg.layer_norm_eps, ..Default::default() },
                     vb_a.pp("output").pp("LayerNorm"),
                 )?,
-                inter: candle_nn::linear(h, cfg.intermediate_size, vb_l.pp("intermediate").pp("dense"))?,
-                out: candle_nn::linear(cfg.intermediate_size, h, vb_l.pp("output").pp("dense"))?,
+                inter: linear(h, cfg.intermediate_size, vb_l.pp("intermediate").pp("dense"))?,
+                out: linear(cfg.intermediate_size, h, vb_l.pp("output").pp("dense"))?,
                 out_ln: candle_nn::layer_norm(
                     h,
                     LayerNormConfig { eps: cfg.layer_norm_eps, ..Default::default() },

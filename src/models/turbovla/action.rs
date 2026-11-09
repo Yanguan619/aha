@@ -4,10 +4,12 @@
 //! `TransformerDecoderLayer(batch_first=True, norm_first=True)`。
 
 use candle_core::{Module, Result, Tensor};
-use candle_nn::{LayerNorm, LayerNormConfig, Linear, VarBuilder};
+use candle_nn::{LayerNorm, LayerNormConfig, VarBuilder};
+use super::linear::{linear, Linear};
 
 use super::config::ActionConfig;
 use super::fusion::split_qkv;
+use super::ops;
 
 fn ln(dim: usize, vb: VarBuilder) -> Result<LayerNorm> {
     candle_nn::layer_norm(dim, LayerNormConfig { eps: 1e-5, ..Default::default() }, vb)
@@ -29,8 +31,8 @@ impl StateProjection {
         let tokens = cfg.num_state_tokens;
         Ok(Self {
             input_norm: ln(cfg.state_dim, vb_p.pp("net.0"))?,
-            l1: candle_nn::linear(cfg.state_dim, cfg.state_hidden_dim, vb_p.pp("net.1"))?,
-            l4: candle_nn::linear(cfg.state_hidden_dim, tokens * hidden, vb_p.pp("net.4"))?,
+            l1: linear(cfg.state_dim, cfg.state_hidden_dim, vb_p.pp("net.1"))?,
+            l4: linear(cfg.state_hidden_dim, tokens * hidden, vb_p.pp("net.4"))?,
             position: vb_p.get((1, tokens, hidden), "position")?,
             output_norm: ln(hidden, vb_p.pp("output_norm"))?,
             tokens,
@@ -74,13 +76,13 @@ impl DecoderLayer {
             self_q,
             self_k,
             self_v,
-            self_out: candle_nn::linear(hidden, hidden, vb.pp("self_attn").pp("out_proj"))?,
+            self_out: linear(hidden, hidden, vb.pp("self_attn").pp("out_proj"))?,
             cross_q,
             cross_k,
             cross_v,
-            cross_out: candle_nn::linear(hidden, hidden, vb.pp("multihead_attn").pp("out_proj"))?,
-            linear1: candle_nn::linear(hidden, ff, vb.pp("linear1"))?,
-            linear2: candle_nn::linear(ff, hidden, vb.pp("linear2"))?,
+            cross_out: linear(hidden, hidden, vb.pp("multihead_attn").pp("out_proj"))?,
+            linear1: linear(hidden, ff, vb.pp("linear1"))?,
+            linear2: linear(ff, hidden, vb.pp("linear2"))?,
             norm1: ln(hidden, vb.pp("norm1"))?,
             norm2: ln(hidden, vb.pp("norm2"))?,
             norm3: ln(hidden, vb.pp("norm3"))?,
@@ -90,15 +92,7 @@ impl DecoderLayer {
     }
 
     fn attn(&self, q: &Tensor, k: &Tensor, v: &Tensor, heads: usize, scale: f64) -> Result<Tensor> {
-        let (b, sq, _) = q.dims3()?;
-        let sk = k.dim(1)?;
-        let hd = q.dim(2)? / heads;
-        let q = q.reshape((b, sq, heads, hd))?.transpose(1, 2)?.contiguous()?;
-        let k = k.reshape((b, sk, heads, hd))?.transpose(1, 2)?.contiguous()?;
-        let v = v.reshape((b, sk, heads, hd))?.transpose(1, 2)?.contiguous()?;
-        let a = (q.matmul(&k.transpose(2, 3)?.contiguous()?)? * scale)?;
-        let a = candle_nn::ops::softmax_last_dim(&a)?;
-        a.matmul(&v)?.transpose(1, 2)?.reshape((b, sq, heads * hd))
+        ops::masked_attention(q, k, v, heads, scale, None)
     }
 
     /// norm_first=True 的 decoder 层。
@@ -156,9 +150,9 @@ impl ActionHead {
             queries,
             layers,
             proj: [
-                candle_nn::linear(hidden, mid, vb_p.pp("layers.0"))?,
-                candle_nn::linear(mid, mid, vb_p.pp("layers.1"))?,
-                candle_nn::linear(mid, cfg.action_dim, vb_p.pp("layers.2"))?,
+                linear(hidden, mid, vb_p.pp("layers.0"))?,
+                linear(mid, mid, vb_p.pp("layers.1"))?,
+                linear(mid, cfg.action_dim, vb_p.pp("layers.2"))?,
             ],
             hidden,
             horizon: cfg.horizon,

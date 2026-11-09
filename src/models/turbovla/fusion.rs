@@ -2,12 +2,14 @@
 //!
 //! 移植自 `turbovla/models/components/fusion.py` 和 `transformer.py`（Grounding DINO 的
 //! 双向注意力）。注意 `attention_backend="manual"`：走手写注意力（稳定 softmax + clamp），
-//! 不是 sdpa。
+//! 不是 sdpa。实现在 `ops.rs`：语义和 Python 一致，但不做设备同步、不多拷一份转置。
 
 use candle_core::{DType, Module, Result, Tensor, D};
-use candle_nn::{LayerNorm, LayerNormConfig, Linear, VarBuilder};
+use candle_nn::{LayerNorm, LayerNormConfig, VarBuilder};
+use super::linear::{linear, linear_no_bias, Linear};
 
 use super::config::InteractionConfig;
+use super::ops;
 
 fn ln(dim: usize, vb: VarBuilder) -> Result<LayerNorm> {
     candle_nn::layer_norm(dim, LayerNormConfig { eps: 1e-5, ..Default::default() }, vb)
@@ -28,9 +30,9 @@ impl VisionProjection {
         let hidden = (out_dim * 4).max(in_dim / 2);
         Ok(Self {
             input_norm: ln(in_dim, vb_p.pp("input_norm"))?,
-            mlp0: candle_nn::linear(in_dim, hidden, vb_p.pp("mlp.0"))?,
-            mlp3: candle_nn::linear(hidden, out_dim, vb_p.pp("mlp.3"))?,
-            skip: candle_nn::linear_no_bias(in_dim, out_dim, vb_p.pp("skip"))?,
+            mlp0: linear(in_dim, hidden, vb_p.pp("mlp.0"))?,
+            mlp3: linear(hidden, out_dim, vb_p.pp("mlp.3"))?,
+            skip: linear_no_bias(in_dim, out_dim, vb_p.pp("skip"))?,
             output_norm: ln(out_dim, vb_p.pp("output_norm"))?,
         })
     }
@@ -56,29 +58,12 @@ pub(super) fn split_qkv(vb: VarBuilder, dim: usize, name: &str) -> Result<(Linea
     Ok((part(0)?, part(1)?, part(2)?))
 }
 
-fn mha(
-    q: &Tensor,
-    k: &Tensor,
-    v: &Tensor,
-    heads: usize,
-    scale: f64,
-    self_mask: Option<&Tensor>,
-) -> Result<Tensor> {
-    let (b, sq, _) = q.dims3()?;
-    let sk = k.dim(1)?;
-    let hd = q.dim(2)? / heads;
-    let q = q.reshape((b, sq, heads, hd))?.transpose(1, 2)?.contiguous()?;
-    let k = k.reshape((b, sk, heads, hd))?.transpose(1, 2)?.contiguous()?;
-    let v = v.reshape((b, sk, heads, hd))?.transpose(1, 2)?.contiguous()?;
-    let mut attn = (q.matmul(&k.transpose(2, 3)?.contiguous()?)? * scale)?;
-    // `self_mask`: (B,S,S) u8，1 = 允许（子句级 3D mask）
-    if let Some(mask) = self_mask {
-        let m = mask.to_dtype(DType::F32)?;
-        let add = ((m.ones_like()? - &m)? * f32::MIN as f64)?;
-        attn = attn.broadcast_add(&add.unsqueeze(1)?)?;
+/// `self_mask`：(B,S,S) u8，1 = 允许（子句级 3D mask）→ 加性 mask (B,1,S,S)。
+fn self_mask_additive(self_mask: Option<&Tensor>, dtype: DType) -> Result<Option<Tensor>> {
+    match self_mask {
+        Some(m) => Ok(Some(ops::additive_keep(m, dtype)?.unsqueeze(1)?)),
+        None => Ok(None),
     }
-    let attn = candle_nn::ops::softmax_last_dim(&attn)?;
-    attn.matmul(&v)?.transpose(1, 2)?.reshape((b, sq, heads * hd))
 }
 
 /// 文本侧的 TransformerEncoderLayer（post-norm，ReLU，packed qkv）。
@@ -103,9 +88,9 @@ impl TextLayer {
             q,
             k,
             v,
-            out: candle_nn::linear(d, d, vb.pp("self_attn").pp("out_proj"))?,
-            linear1: candle_nn::linear(d, cfg.enhancer_inner_dim, vb.pp("linear1"))?,
-            linear2: candle_nn::linear(cfg.enhancer_inner_dim, d, vb.pp("linear2"))?,
+            out: linear(d, d, vb.pp("self_attn").pp("out_proj"))?,
+            linear1: linear(d, cfg.enhancer_inner_dim, vb.pp("linear1"))?,
+            linear2: linear(cfg.enhancer_inner_dim, d, vb.pp("linear2"))?,
             norm1: ln(d, vb.pp("norm1"))?,
             norm2: ln(d, vb.pp("norm2"))?,
             heads: cfg.nheads / 2,
@@ -117,7 +102,8 @@ impl TextLayer {
         let q = self.q.forward(src)?;
         let k = self.k.forward(src)?;
         let v = self.v.forward(src)?;
-        let attn = mha(&q, &k, &v, self.heads, self.scale, self_mask)?;
+        let additive = self_mask_additive(self_mask, src.dtype())?;
+        let attn = ops::masked_attention(&q, &k, &v, self.heads, self.scale, additive.as_ref())?;
         let attn = self.out.forward(&attn)?;
         let x = self.norm1.forward(&(src + attn)?)?;
         let mlp = candle_nn::Activation::Relu.forward(&self.linear1.forward(&x)?)?;
@@ -135,7 +121,6 @@ pub struct BiAttn {
     out_v: Linear,
     out_l: Linear,
     heads: usize,
-    head_dim: usize,
     scale: f64,
 }
 
@@ -145,14 +130,13 @@ impl BiAttn {
         let inner = cfg.enhancer_inner_dim;
         let vb_a = vb.pp("attn");
         Ok(Self {
-            v_proj: candle_nn::linear(d, inner, vb_a.pp("v_proj"))?,
-            l_proj: candle_nn::linear(d, inner, vb_a.pp("l_proj"))?,
-            values_v: candle_nn::linear(d, inner, vb_a.pp("values_v_proj"))?,
-            values_l: candle_nn::linear(d, inner, vb_a.pp("values_l_proj"))?,
-            out_v: candle_nn::linear(inner, d, vb_a.pp("out_v_proj"))?,
-            out_l: candle_nn::linear(inner, d, vb_a.pp("out_l_proj"))?,
+            v_proj: linear(d, inner, vb_a.pp("v_proj"))?,
+            l_proj: linear(d, inner, vb_a.pp("l_proj"))?,
+            values_v: linear(d, inner, vb_a.pp("values_v_proj"))?,
+            values_l: linear(d, inner, vb_a.pp("values_l_proj"))?,
+            out_v: linear(inner, d, vb_a.pp("out_v_proj"))?,
+            out_l: linear(inner, d, vb_a.pp("out_l_proj"))?,
             heads: (cfg.nheads / 2).max(1),
-            head_dim: inner / (cfg.nheads / 2).max(1),
             scale: ((inner / (cfg.nheads / 2).max(1)) as f64).powf(-0.5),
         })
     }
@@ -164,36 +148,12 @@ impl BiAttn {
         l: &Tensor,
         mask_l: Option<&Tensor>,
     ) -> Result<(Tensor, Tensor)> {
-        let (b, sv, _) = v.dims3()?;
-        let sl = l.dim(1)?;
-        let q = self.v_proj.forward(v)?.reshape((b, sv, self.heads, self.head_dim))?.transpose(1, 2)?.contiguous()?;
-        let k = self.l_proj.forward(l)?.reshape((b, sl, self.heads, self.head_dim))?.transpose(1, 2)?.contiguous()?;
-        let vv = self.values_v.forward(v)?.reshape((b, sv, self.heads, self.head_dim))?.transpose(1, 2)?.contiguous()?;
-        let vl = self.values_l.forward(l)?.reshape((b, sl, self.heads, self.head_dim))?.transpose(1, 2)?.contiguous()?;
+        let q = ops::split_heads(&self.v_proj.forward(v)?, self.heads)?;
+        let k = ops::split_heads(&self.l_proj.forward(l)?, self.heads)?;
+        let vv = ops::split_heads(&self.values_v.forward(v)?, self.heads)?;
+        let vl = ops::split_heads(&self.values_l.forward(l)?, self.heads)?;
 
-        let mut attn = (q.matmul(&k.transpose(2, 3)?.contiguous()?)? * self.scale)?;
-        // stable softmax：先减全局 max，再 clamp
-        let max = attn.to_dtype(DType::F32)?.max_all()?.to_scalar::<f32>()?;
-        let max_t = Tensor::new(max, attn.device())?.to_dtype(attn.dtype())?;
-        attn = attn.broadcast_sub(&max_t)?;
-        attn = attn.clamp(-50000f32, 50000f32)?;
-
-        let mut attn_l = attn.transpose(2, 3)?.contiguous()?;
-        let max_l = attn_l.max(D::Minus1)?.unsqueeze(D::Minus1)?;
-        attn_l = attn_l.broadcast_sub(&max_l)?;
-        attn_l = attn_l.clamp(-50000f32, 50000f32)?;
-
-        // `mask_l`: (B,Sl)，1 = padding → 把语言侧的 padding 列遮掉
-        if let Some(mask) = mask_l {
-            let m = mask.to_dtype(DType::F32)?.unsqueeze(1)?.unsqueeze(1)?; // (B,1,1,Sl)
-            let add = (m * f32::MIN as f64)?;
-            attn = attn.broadcast_add(&add)?;
-        }
-
-        let pv = candle_nn::ops::softmax_last_dim(&attn)?;
-        let pl = candle_nn::ops::softmax_last_dim(&attn_l)?;
-        let out_v = pv.matmul(&vl)?.transpose(1, 2)?.reshape((b, sv, self.heads * self.head_dim))?;
-        let out_l = pl.matmul(&vv)?.transpose(1, 2)?.reshape((b, sl, self.heads * self.head_dim))?;
+        let (out_v, out_l) = ops::bi_attention(&q, &k, &vv, &vl, self.scale, mask_l)?;
         Ok((self.out_v.forward(&out_v)?, self.out_l.forward(&out_l)?))
     }
 }

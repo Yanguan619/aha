@@ -12,13 +12,22 @@
 pub mod action;
 pub mod config;
 pub mod fusion;
+#[cfg(feature = "cuda")]
+pub mod graph;
+#[cfg(feature = "cuda")]
+pub mod heads_cuda;
+pub mod linear;
+pub mod ops;
 pub mod text;
 pub mod vision;
 
 use anyhow::{Context, Result, bail};
 use candle_core::{DType, Device, Module, Tensor};
-use candle_nn::{Linear, VarBuilder};
+use crate::models::turbovla::linear::{linear, Linear};
+use candle_nn::VarBuilder;
 use image::imageops::FilterType;
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 use self::action::ActionHead;
 use self::config::ModelLayout;
@@ -61,6 +70,52 @@ fn normalize_state(state: &[f32]) -> Vec<f32> {
         .collect()
 }
 
+/// 分段计时器：`laps` 为 `None` 时所有调用都是空操作（零开销）。
+struct Timer<'a> {
+    laps: Option<&'a mut Vec<(&'static str, f64)>>,
+    device: Option<&'a Device>,
+    start: std::time::Instant,
+    last: std::time::Instant,
+}
+
+impl<'a> Timer<'a> {
+    fn disabled() -> Self {
+        Self {
+            laps: None,
+            device: None,
+            start: std::time::Instant::now(),
+            last: std::time::Instant::now(),
+        }
+    }
+
+    fn new(device: &'a Device, laps: Option<&'a mut Vec<(&'static str, f64)>>) -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            laps,
+            device: Some(device),
+            start: now,
+            last: now,
+        }
+    }
+
+    /// 记一段耗时。先同步设备，否则 CUDA 的异步队列会把上一段的时间算进下一段。
+    fn lap(&mut self, name: &'static str) -> Result<()> {
+        if let Some(laps) = self.laps.as_mut() {
+            if let Some(dev) = self.device {
+                dev.synchronize()?;
+            }
+            let now = std::time::Instant::now();
+            laps.push((name, (now - self.last).as_secs_f64() * 1e3));
+            self.last = now;
+        }
+        Ok(())
+    }
+
+    fn total(&self) -> f64 {
+        self.start.elapsed().as_secs_f64() * 1e3
+    }
+}
+
 /// 常驻的 TurboVLA 模型。
 pub struct TurboVlaModel {
     text: TextTokenizer,
@@ -81,6 +136,33 @@ pub struct TurboVlaModel {
     pad_len: usize,
     pad_len_by_instruction: std::collections::HashMap<String, usize>,
     zero_fill: bool,
+    /// 指令 → 文本侧的各阶段张量（BERT 段只跟指令有关，可直接复用）。
+    text_cache: Mutex<HashMap<(String, usize), TextFeat>>,
+    /// `TURBOVLA_GRAPH=1` 时，CUDA 上尝试用 graph 重放。
+    graph_on: std::sync::atomic::AtomicBool,
+    #[cfg(feature = "cuda")]
+    graph_slot: Mutex<Option<GraphSlot>>,
+}
+
+#[cfg(feature = "cuda")]
+struct GraphSlot {
+    /// (instruction, group_len, 视角数)：参数变了就重捕。
+    key: (String, usize, usize),
+    /// 图里烧死了这些文本特征的地址，必须一直活着。
+    #[allow(dead_code)]
+    feat: TextFeat,
+    runner: crate::models::turbovla::graph::GraphRunner,
+}
+
+/// 文本侧的常量输出（同一指令、同一组长度下完全确定）。
+#[derive(Clone)]
+struct TextFeat {
+    input_ids: Tensor,
+    position_ids: Tensor,
+    self_attention: Tensor,
+    key_padding: Tensor,
+    pad_mask: Tensor,
+    text: Tensor,
 }
 
 impl TurboVlaModel {
@@ -101,7 +183,7 @@ impl TurboVlaModel {
         };
 
         let bert = BertEncoder::load(&layout.text, vb.pp("text_encoder").pp("bert"))?;
-        let text_proj = candle_nn::linear(
+        let text_proj = linear(
             layout.text.hidden_size,
             hidden,
             vb.pp("text_encoder").pp("text_projection"),
@@ -141,6 +223,13 @@ impl TurboVlaModel {
             pad_len,
             pad_len_by_instruction: cfg.text.padding_length_by_instruction.clone(),
             zero_fill: cfg.interaction.padding_strategy == "zero_fill",
+            text_cache: Mutex::new(HashMap::new()),
+            graph_on: std::sync::atomic::AtomicBool::new(
+                std::env::var("TURBOVLA_GRAPH").map(|v| v == "1").unwrap_or(false),
+            ),
+
+            #[cfg(feature = "cuda")]
+            graph_slot: Mutex::new(None),
         })
     }
 
@@ -182,7 +271,72 @@ impl TurboVlaModel {
     /// 一帧一个视角：`images` 是每帧的 JPEG/PNG 字节（顺序和训练一致），
     /// `state` 是 state_dim 维（LIBERO 是 8）。返回 `(1, horizon, action_dim)`。
     pub fn predict(&self, images: &[&[u8]], instruction: &str, state: &[f32]) -> Result<Tensor> {
+        #[cfg(feature = "cuda")]
+        if self.graph_on.load(std::sync::atomic::Ordering::Relaxed) && self.device.is_cuda() {
+            match self.predict_graph(images, instruction, state) {
+                Ok(t) => return Ok(t),
+                Err(e) => {
+                    eprintln!("[turbovla] CUDA graph 不可用，改用逐算子：{e:#}");
+                    self.graph_on
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
         Ok(self.stages(images, instruction, state)?.actions)
+    }
+
+    /// CUDA graph 路径：首次捕获，之后每帧只做 H2D + 一次 launch。
+    #[cfg(feature = "cuda")]
+    fn predict_graph(
+        &self,
+        images: &[&[u8]],
+        instruction: &str,
+        state: &[f32],
+    ) -> Result<Tensor> {
+        if images.len() != self.num_views {
+            bail!("需要 {} 个视角，收到 {}", self.num_views, images.len());
+        }
+        if state.len() != self.state_dim {
+            bail!("state 需要 {} 维，收到 {}", self.state_dim, state.len());
+        }
+        let pad_len = self.pad_len;
+        let group_len = group_len_for(&self.pad_len_by_instruction, instruction, pad_len);
+        let key = (instruction.to_string(), group_len, images.len());
+
+        let pixel_host = self.pixel_host(images)?;
+        let state_host = normalize_state(state);
+
+        let mut slot = self.graph_slot.lock().unwrap();
+        if let Some(s) = slot.as_ref() {
+            if s.key == key {
+                s.runner.upload(&pixel_host, &state_host)?;
+                return s.runner.replay();
+            }
+        }
+
+        // 捕获（参数变了就重捕一次）
+        let feat = self.text_features(instruction, group_len, pad_len)?;
+        let runner = crate::models::turbovla::graph::GraphRunner::try_capture(
+            &self.device,
+            self.dtype,
+            (1, self.num_views, 3, self.image_size, self.image_size),
+            &pixel_host,
+            (1, self.state_dim),
+            &state_host,
+            |pixel, st| {
+                let mut timer = Timer::disabled();
+                Ok(self.compute(pixel, &feat, st, &mut timer)?.1.2)
+            },
+        )?;
+
+        // 捕获时用的就是这一帧的输入，直接重放一次拿到结果
+        let first = runner.replay()?;
+        *slot = Some(GraphSlot {
+            key,
+            feat,
+            runner,
+        });
+        Ok(first)
     }
 
     /// 跑一遍并保留各阶段张量（对齐 Python 参考时用）。
@@ -191,6 +345,32 @@ impl TurboVlaModel {
         images: &[&[u8]],
         instruction: &str,
         state: &[f32],
+    ) -> Result<Stages> {
+        let mut timer = Timer::disabled();
+        self.run(images, instruction, state, &mut timer)
+    }
+
+    /// 分段计时（毫秒）。每段结束显式同步，否则 CUDA 的异步执行会把时间记到下一段。
+    pub fn stages_timed(
+        &self,
+        images: &[&[u8]],
+        instruction: &str,
+        state: &[f32],
+    ) -> Result<(Stages, Vec<(&'static str, f64)>)> {
+        let mut laps = Vec::new();
+        let mut timer = Timer::new(&self.device, Some(&mut laps));
+        let stages = self.run(images, instruction, state, &mut timer)?;
+        let total = timer.total();
+        laps.push(("total", total));
+        Ok((stages, laps))
+    }
+
+    fn run(
+        &self,
+        images: &[&[u8]],
+        instruction: &str,
+        state: &[f32],
+        timer: &mut Timer<'_>,
     ) -> Result<Stages> {
         if images.len() != self.num_views {
             bail!("需要 {} 个视角，收到 {}", self.num_views, images.len());
@@ -206,17 +386,81 @@ impl TurboVlaModel {
         let pixel = Tensor::stack(&frames, 0)?.unsqueeze(0)?; // (1,V,3,H,W)
         let pad_len = self.pad_len;
         let group_len = group_len_for(&self.pad_len_by_instruction, instruction, pad_len);
+        timer.lap("preprocess")?;
 
-        let mut vis = Vec::with_capacity(self.num_views);
-        for v in 0..self.num_views {
-            let view = pixel.narrow(1, v, 1)?.squeeze(1)?; // (1,3,H,W)
-            vis.push(self.vision.forward(&view)?); // (1,P,768)
-        }
-        let vis = Tensor::stack(&vis, 1)?; // (1,V,P,768)
+        let feat = self.text_features(instruction, group_len, pad_len)?;
+        timer.lap("bert")?;
+
+        let st = Tensor::from_vec(normalize_state(state), (1, self.state_dim), &self.device)?
+            .to_dtype(self.dtype)?;
+        let (vis, (v, l, actions)) = self.compute(&pixel, &feat, &st, timer)?;
+        Ok(Stages {
+            pixel,
+            input_ids: feat.input_ids.clone(),
+            position_ids: feat.position_ids.clone(),
+            self_attention: feat.self_attention.clone(),
+            key_padding: feat.key_padding.clone(),
+            pad_mask: feat.pad_mask.clone(),
+            text: feat.text.clone(),
+            visual: vis,
+            fused_v: v,
+            fused_l: l,
+            actions,
+        })
+    }
+
+    /// 纯张量计算：图捕获的就是这一段，**不能有主机同步/主机内存分配**。
+    ///
+    /// 返回 `(vision tokens, (fused_v, fused_l, actions))`。
+    fn compute(
+        &self,
+        pixel: &Tensor,
+        feat: &TextFeat,
+        st: &Tensor,
+        timer: &mut Timer<'_>,
+    ) -> Result<(Tensor, (Tensor, Tensor, Tensor))> {
+        // 两个视角**一次前向**：ViT 逐样本独立，合批只是把 kernel 数量减半。
+        let vis = self.vision.forward(&pixel.squeeze(0)?)?; // (V,P,768)
+        let vis = vis.unsqueeze(0)?; // (1,V,P,768)
         let vis = self.vision_proj.forward(&vis)?; // (1,V,P,hidden)
         let view = self.view_embedding.unsqueeze(2)?; // (1,V,1,hidden)
         let vis = vis.broadcast_add(&view)?; // + view embedding
         let vis = vis.flatten(1, 2)?; // (1,V*P,hidden)
+        timer.lap("vision")?;
+
+        let (v, l) = self.interaction.forward(
+            &vis,
+            &feat.text,
+            Some(&feat.pad_mask),
+            Some(&feat.self_attention),
+            self.zero_fill,
+        )?;
+        timer.lap("fusion")?;
+        let condition = Tensor::cat(&[&v, &l], 1)?;
+
+        let actions = self
+            .action
+            .forward(&condition, st)
+            .map_err(anyhow::Error::from)?;
+        timer.lap("action")?;
+        Ok((vis, (v, l, actions)))
+    }
+
+    /// 图像字节 → `(V,3,H,W)` 的 f32 主机缓冲（图模式下直接 H2D 到静态显存）。
+    fn pixel_host(&self, images: &[&[u8]]) -> Result<Vec<f32>> {
+        let mut all = Vec::with_capacity(images.len() * 3 * self.image_size * self.image_size);
+        for bytes in images {
+            all.extend(preprocess_host(bytes, self.image_size)?);
+        }
+        Ok(all)
+    }
+
+    /// 文本侧各阶段：同一 (instruction, group_len) 只算一次。
+    fn text_features(&self, instruction: &str, group_len: usize, pad_len: usize) -> Result<TextFeat> {
+        let key = (instruction.to_string(), group_len);
+        if let Some(hit) = self.text_cache.lock().unwrap().get(&key) {
+            return Ok(hit.clone());
+        }
 
         let enc = self.text.encode(instruction, group_len)?;
         let batch = TextBatch::build(&[enc], &self.device, group_len, pad_len)?;
@@ -234,36 +478,21 @@ impl TurboVlaModel {
                 Tensor::from_vec(keep, (1, pad_len, 1), &self.device)?.to_dtype(hidden.dtype())?;
             hidden = hidden.broadcast_mul(&keep)?;
         }
-        let txt = self.text_proj.forward(&hidden)?;
+        let feat = TextFeat {
+            input_ids: batch.input_ids,
+            position_ids: batch.position_ids,
+            self_attention: batch.self_attention,
+            key_padding: batch.key_padding,
+            pad_mask: batch.pad_mask,
+            text: self.text_proj.forward(&hidden)?,
+        };
 
-        let (v, l) = self.interaction.forward(
-            &vis,
-            &txt,
-            Some(&batch.pad_mask),
-            Some(&batch.self_attention),
-            self.zero_fill,
-        )?;
-        let condition = Tensor::cat(&[&v, &l], 1)?;
-
-        let st = Tensor::from_vec(normalize_state(state), (1, self.state_dim), &self.device)?
-            .to_dtype(self.dtype)?;
-        let actions = self
-            .action
-            .forward(&condition, &st)
-            .map_err(anyhow::Error::from)?;
-        Ok(Stages {
-            pixel,
-            input_ids: batch.input_ids.clone(),
-            position_ids: batch.position_ids.clone(),
-            self_attention: batch.self_attention.clone(),
-            key_padding: batch.key_padding.clone(),
-            pad_mask: batch.pad_mask.clone(),
-            text: txt.clone(),
-            visual: vis.clone(),
-            fused_v: v,
-            fused_l: l,
-            actions,
-        })
+        let mut cache = self.text_cache.lock().unwrap();
+        if cache.len() >= 8 {
+            cache.clear();
+        }
+        cache.insert(key, feat.clone());
+        Ok(feat)
     }
 }
 
@@ -284,6 +513,12 @@ pub struct Stages {
 
 /// 一张图 → (3,size,size) 的归一化张量（和 HF `preprocessor_config` 一致）。
 fn preprocess(bytes: &[u8], size: usize, device: &Device, dtype: DType) -> Result<Tensor> {
+    let data = preprocess_host(bytes, size)?;
+    Ok(Tensor::from_vec(data, (3, size, size), device)?.to_dtype(dtype)?)
+}
+
+/// 同上，但只出主机侧的 f32 缓冲（graph 模式直接 H2D 进静态显存）。
+fn preprocess_host(bytes: &[u8], size: usize) -> Result<Vec<f32>> {
     let img = image::load_from_memory(bytes)
         .map_err(|e| anyhow::anyhow!("图片解码失败：{e}"))?;
     // 和 PIL 对齐：尺寸已经一致时不做重采样（resize_exact 会模糊）。
@@ -300,5 +535,5 @@ fn preprocess(bytes: &[u8], size: usize, device: &Device, dtype: DType) -> Resul
                 (px[c] as f32 / 255.0 - IMAGE_MEAN[c]) / IMAGE_STD[c];
         }
     }
-    Ok(Tensor::from_vec(data, (3, size, size), device)?.to_dtype(dtype)?)
+    Ok(data)
 }

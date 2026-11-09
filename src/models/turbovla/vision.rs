@@ -6,8 +6,9 @@
 
 use std::f32::consts::PI;
 
-use candle_core::{DType, Device, Module, Result, Tensor, D};
-use candle_nn::{Activation, Conv2d, Conv2dConfig, LayerNorm, LayerNormConfig, Linear, VarBuilder};
+use candle_core::{DType, Device, Module, Result, Tensor};
+use candle_nn::{Activation, Conv2d, Conv2dConfig, LayerNorm, LayerNormConfig, VarBuilder};
+use super::linear::{linear, linear_no_bias, Linear};
 
 use super::config::DinoConfig;
 
@@ -50,14 +51,24 @@ impl Rope {
             sin: Tensor::from_vec(sin, (gh * gw, head_dim), device)?,
         })
     }
-}
 
-fn rotate_half(x: &Tensor) -> Result<Tensor> {
-    let d = x.dim(D::Minus1)?;
-    let half = d / 2;
-    let x1 = x.narrow(D::Minus1, 0, half)?;
-    let x2 = x.narrow(D::Minus1, half, half)?;
-    Tensor::cat(&[&x2.neg()?, &x1], D::Minus1)
+    /// 转成 `candle_nn::rotary_emb::rope` 要的形状：`(1, 1, S, head_dim/2)`。
+    ///
+    /// 前缀（cls + register）位置填 `(cos=1, sin=0)`，等价于恒等变换——这样 RoPE
+    /// 可以**整段一次算完**，不用 `narrow → 乘 → rotate_half → 乘 → 加 → cat` 那 7 个算子。
+    fn prepared(&self, dtype: DType, num_prefix: usize) -> Result<(Tensor, Tensor)> {
+        let half = self.cos.dim(1)? / 2;
+        let dev = self.cos.device();
+        // `Rope` 里存的是"半维重复两遍"的布局，`rope` 只需要前一半。
+        let cos = self.cos.narrow(1, 0, half)?.to_dtype(dtype)?.contiguous()?;
+        let sin = self.sin.narrow(1, 0, half)?.to_dtype(dtype)?.contiguous()?;
+        let one = Tensor::ones((num_prefix, half), dtype, dev)?;
+        let zero = Tensor::zeros((num_prefix, half), dtype, dev)?;
+        // 2 维形式 `(S, head_dim/2)`：rope 接受 2D，batch/head 维度在 kernel 里自己广播。
+        let cos = Tensor::cat(&[&one, &cos], 0)?;
+        let sin = Tensor::cat(&[&zero, &sin], 0)?;
+        Ok((cos, sin))
+    }
 }
 
 struct Attention {
@@ -77,24 +88,24 @@ impl Attention {
         let head_dim = h / heads;
         let vb_a = vb.pp("attention");
         let q = if cfg.query_bias {
-            candle_nn::linear(h, h, vb_a.pp("q_proj"))?
+            linear(h, h, vb_a.pp("q_proj"))?
         } else {
-            candle_nn::linear_no_bias(h, h, vb_a.pp("q_proj"))?
+            linear_no_bias(h, h, vb_a.pp("q_proj"))?
         };
         let k = if cfg.key_bias {
-            candle_nn::linear(h, h, vb_a.pp("k_proj"))?
+            linear(h, h, vb_a.pp("k_proj"))?
         } else {
-            candle_nn::linear_no_bias(h, h, vb_a.pp("k_proj"))?
+            linear_no_bias(h, h, vb_a.pp("k_proj"))?
         };
         let v = if cfg.value_bias {
-            candle_nn::linear(h, h, vb_a.pp("v_proj"))?
+            linear(h, h, vb_a.pp("v_proj"))?
         } else {
-            candle_nn::linear_no_bias(h, h, vb_a.pp("v_proj"))?
+            linear_no_bias(h, h, vb_a.pp("v_proj"))?
         };
         let o = if cfg.proj_bias {
-            candle_nn::linear(h, h, vb_a.pp("o_proj"))?
+            linear(h, h, vb_a.pp("o_proj"))?
         } else {
-            candle_nn::linear_no_bias(h, h, vb_a.pp("o_proj"))?
+            linear_no_bias(h, h, vb_a.pp("o_proj"))?
         };
         Ok(Self {
             q,
@@ -107,7 +118,7 @@ impl Attention {
         })
     }
 
-    fn forward(&self, xs: &Tensor, rope: &Rope, num_prefix: usize) -> Result<Tensor> {
+    fn forward(&self, xs: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
         let (b, s, _) = xs.dims3()?;
         let dtype = xs.dtype();
         let q = self
@@ -126,27 +137,25 @@ impl Attention {
             .reshape((b, s, self.heads, self.head_dim))?
             .transpose(1, 2)?;
 
-        // RoPE 只作用在 patch token（prefix 不动）
-        let (q, k) = if num_prefix > 0 {
-            let p = s - num_prefix;
-            let cos = rope.cos.to_dtype(dtype)?.reshape((1, 1, p, self.head_dim))?;
-            let sin = rope.sin.to_dtype(dtype)?.reshape((1, 1, p, self.head_dim))?;
-            let qp = q.narrow(2, num_prefix, p)?;
-            let kp = k.narrow(2, num_prefix, p)?;
-            let qp = (qp.broadcast_mul(&cos)? + rotate_half(&qp)?.broadcast_mul(&sin)?)?;
-            let kp = (kp.broadcast_mul(&cos)? + rotate_half(&kp)?.broadcast_mul(&sin)?)?;
-            let q = Tensor::cat(&[&q.narrow(2, 0, num_prefix)?, &qp], 2)?;
-            let k = Tensor::cat(&[&k.narrow(2, 0, num_prefix)?, &kp], 2)?;
-            (q.contiguous()?, k.contiguous()?)
-        } else {
-            (q.contiguous()?, k.contiguous()?)
-        };
+        // RoPE 一次算完（融合 kernel）。前缀位置的 cos/sin 是 (1, 0)，等价于不动。
+        let q = candle_nn::rotary_emb::rope(&q.contiguous()?, cos, sin)?;
+        let k = candle_nn::rotary_emb::rope(&k.contiguous()?, cos, sin)?;
 
         let attn = q.matmul(&k.transpose(2, 3)?.contiguous()?)?;
         let attn = (attn * self.scale)?;
-        // softmax 在 f32 里做（和 HF 一致）
-        let attn = candle_nn::ops::softmax_last_dim(&attn.to_dtype(DType::F32)?)?
-            .to_dtype(dtype)?;
+        // softmax：candle 的 bf16 kernel 内部就是 f32 累加，原来那趟
+        // `to_dtype(F32) → softmax → to_dtype(bf16)` 纯属多搬两遍内存
+        // （nsys：cast_bf16_f32 + cast_f32_bf16 每帧 1.17ms）。
+        // 需要和旧口径逐位对齐时用 TURBOVLA_SOFTMAX_F32=1 退回。
+        let attn = if dtype == DType::F32 || std::env::var("TURBOVLA_SOFTMAX_F32").is_ok() {
+            candle_nn::ops::softmax_last_dim(&attn.to_dtype(DType::F32)?)?.to_dtype(dtype)?
+        } else {
+            candle_nn::ops::softmax_last_dim(&attn)?
+        };
+        // v 必须 contiguous：cublas 只接受「最后两维是 dense 行」的布局，
+        // `(B,S,H,D).transpose(1,2)` 出来的 stride 两条分支都不满足，
+        // CUDA 上会直接报 MatMulNonContiguous（CPU 能跑，所以只在 GPU 上暴露）。
+        let v = v.contiguous()?;
         let out = attn.matmul(&v)?;
         let out = out.transpose(1, 2)?.reshape((b, s, self.heads * self.head_dim))?;
         self.o.forward(&out)
@@ -165,14 +174,14 @@ impl Mlp {
         let vb_m = vb.pp("mlp");
         Ok(Self {
             up: if cfg.mlp_bias {
-                candle_nn::linear(h, i, vb_m.pp("up_proj"))?
+                linear(h, i, vb_m.pp("up_proj"))?
             } else {
-                candle_nn::linear_no_bias(h, i, vb_m.pp("up_proj"))?
+                linear_no_bias(h, i, vb_m.pp("up_proj"))?
             },
             down: if cfg.mlp_bias {
-                candle_nn::linear(i, h, vb_m.pp("down_proj"))?
+                linear(i, h, vb_m.pp("down_proj"))?
             } else {
-                candle_nn::linear_no_bias(i, h, vb_m.pp("down_proj"))?
+                linear_no_bias(i, h, vb_m.pp("down_proj"))?
             },
         })
     }
@@ -206,10 +215,10 @@ impl Layer {
         })
     }
 
-    fn forward(&self, xs: &Tensor, rope: &Rope, num_prefix: usize) -> Result<Tensor> {
+    fn forward(&self, xs: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
         let residual = xs;
         let h = self.norm1.forward(xs)?;
-        let h = self.attn.forward(&h, rope, num_prefix)?;
+        let h = self.attn.forward(&h, cos, sin)?;
         let h = h.broadcast_mul(&self.ls1)?;
         let h = (h + residual)?;
 
@@ -296,8 +305,10 @@ impl DinoV3 {
         };
         let mut xs = Tensor::cat(&[&prefix, &x], 1)?; // (B, 1+R+P, H)
         debug_assert_eq!(xs.dim(1)?, self.num_prefix + self.num_patches);
+        // cos/sin 只按 dtype 转一次，别每层重算
+        let (cos, sin) = self.rope.prepared(xs.dtype(), self.num_prefix)?;
         for layer in &self.layers {
-            xs = layer.forward(&xs, &self.rope, self.num_prefix)?;
+            xs = layer.forward(&xs, &cos, &sin)?;
         }
         let xs = self.norm.forward(&xs)?;
         xs.narrow(1, self.num_prefix, self.num_patches)

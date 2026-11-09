@@ -103,3 +103,7 @@ required-features = ["vla"]
 name = "turbovla_action"
 required-features = ["vla"]
 
+[[example]]
+name = "turbovla_bench"
+required-features = ["vla"]
+
