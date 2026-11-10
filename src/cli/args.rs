@@ -232,6 +232,10 @@ pub(crate) struct MultiArgs {
     /// TurboVLA 模型目录（启用 VLA 角色；先用 tools/vla/convert_turbovla.py 转换）
     #[arg(long)]
     pub vla: Option<String>,
+    /// VLA 单独的推理设备（cpu / cuda）；不给则用 `--device`。
+    /// laya 和 vla 想各走各的设备时用它（桌宠默认 laya=cpu、vla=cuda）。
+    #[arg(long)]
+    pub vla_device: Option<String>,
 
     #[command(flatten)]
     pub server_common: ServerCommonArgs,

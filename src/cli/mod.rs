@@ -137,6 +137,7 @@ pub(crate) async fn run_cli(args: CliArgs) -> anyhow::Result<()> {
         mmproj,
         &InitOptions {
             device: pet.device,
+            vla_device: None,
             min_confidence: pet.min_confidence,
             request_timeout_ms: pet.request_timeout_ms,
             threads: pet.threads,
@@ -209,6 +210,7 @@ pub(crate) async fn run_serv(args: ServArgs) -> anyhow::Result<()> {
         mmproj,
         &InitOptions {
             device: pet.device,
+            vla_device: None,
             min_confidence: pet.min_confidence,
             request_timeout_ms: pet.request_timeout_ms,
             threads: pet.threads,
@@ -233,6 +235,7 @@ pub(crate) async fn run_multi(args: MultiArgs) -> anyhow::Result<()> {
         laya,
         laya_path,
         vla,
+        vla_device,
         server_common,
         pet,
     } = args;
@@ -292,6 +295,7 @@ pub(crate) async fn run_multi(args: MultiArgs) -> anyhow::Result<()> {
         specs,
         &InitOptions {
             device: pet.device,
+            vla_device,
             min_confidence: pet.min_confidence,
             request_timeout_ms: pet.request_timeout_ms,
             threads: pet.threads,

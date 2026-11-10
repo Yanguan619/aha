@@ -8,6 +8,7 @@ use aha::models::{GenerateModel, ModelInstance, common::model_mapping::WhichMode
 use aha::params::chat::ChatCompletionParameters;
 use aha::utils::string_to_static_str;
 use anyhow::anyhow;
+use candle_core::Device;
 use axum::{
     Json,
     body::{Body, Bytes},
@@ -52,6 +53,9 @@ static ALLOW_REMOTE_SHUTDOWN: OnceLock<bool> = OnceLock::new();
 pub struct InitOptions {
     /// Laya 推理设备（cpu / cuda，编译期特征校验）。
     pub device: String,
+    /// VLA 单独的推理设备（cpu / cuda）；`None` = 跟 `device`。
+    /// 桌宠常见组合是 laya=cpu + vla=cuda，共用一个 `--device` 表达不了。
+    pub vla_device: Option<String>,
     /// Laya 置信度门控阈值；<=0 用默认 0.8。
     pub min_confidence: f32,
     /// Laya 单次推理超时（毫秒）；0 用默认 15000。
@@ -92,6 +96,26 @@ impl ModelSpec {
             gguf: None,
             mmproj: None,
         }
+    }
+}
+
+/// 把 `--vla-device` 的字符串翻成 candle 设备；`cpu`/空 走 CPU（`None`）。
+fn vla_device(requested: &str) -> anyhow::Result<Option<Device>> {
+    match requested.trim() {
+        "" | "cpu" => Ok(None),
+        "cuda" => {
+            #[cfg(feature = "cuda")]
+            {
+                Ok(Some(Device::new_cuda(0)?))
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                anyhow::bail!(
+                    "要 cuda 但编的是 cpu 版本：cargo build --release --features vla,cuda（需要 nvcc）"
+                )
+            }
+        }
+        other => anyhow::bail!("不认识的设备 {other:?}，只支持 cpu / cuda"),
     }
 }
 
@@ -137,9 +161,18 @@ fn load_one(spec: &ModelSpec, opts: &InitOptions) -> anyhow::Result<StoredModel>
             default_threads()
         };
         let model_path = string_to_static_str(path);
+        // 只有 VLA 吃设备参数（candle 直接建模型）；别的回去默认 None→CPU。
+        #[cfg(feature = "vla")]
+        let device = if model_type.is_vla_model() {
+            vla_device(opts.vla_device.as_deref().unwrap_or(&opts.device))?
+        } else {
+            None
+        };
+        #[cfg(not(feature = "vla"))]
+        let device: Option<Device> = None;
         StoredModel {
             which_model: model_type,
-            instance: load_model(model_type, model_path, None, None, threads)?,
+            instance: load_model(model_type, model_path, device.as_ref(), None, threads)?,
         }
     };
     Ok(instance)
