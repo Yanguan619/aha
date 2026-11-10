@@ -200,7 +200,7 @@ $env:CUDA_PATH = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8"
 $env:PATH = "$env:CUDA_PATH\bin;$env:PATH"
 $env:LIB  = "$env:CUDA_PATH\lib\x64;$env:LIB"
 $env:CUDA_COMPUTE_CAP = "120"      # 5060 = sm_120；脚本默认 89 是 4060
-$env:TURBOVLA_GRAPH = "1"
+# CUDA graph 默认就开（TURBOVLA_GRAPH=0 才是逐算子），不用再设
 
 cargo build --release --features vla,cuda --example turbovla_bench
 .\target\release\examples\turbovla_bench.exe "E:\models\turbovla\turbovla-libero" 50 --verify
@@ -237,7 +237,7 @@ Linear 换实现、softmax 去 f32 往返、拆合头走专用 kernel）。
 
 | 开关 | 作用 |
 |---|---|
-| `TURBOVLA_GRAPH`（不开=逐算子） | CUDA graph |
+| `TURBOVLA_GRAPH=0`（默认开） | CUDA graph |
 | `TURBOVLA_NO_FUSED_LINEAR=1` | 关 bias epilogue |
 | `TURBOVLA_SOFTMAX_F32=1` | 注意力 softmax 回 f32 往返 |
 

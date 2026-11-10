@@ -144,6 +144,12 @@ impl GraphRunner {
 /// 把 f32 主机数据写进设备缓冲（图上烧死的那个地址）。
 fn upload_one(stream: &Arc<CudaStream>, dtype: DType, dst: u64, src: &[f32]) -> Result<()> {
     use candle_core::cuda_backend::cudarc::driver::result::memcpy_htod_async;
+    // 服务端在 tokio 的任意线程上调：裸 CUDA 调用要求当前线程已绑定 stream 的上下文，
+    // 否则 memcpy 报 CUDA_ERROR_INVALID_CONTEXT（candle 自己的算子内部会 bind，这里不会）。
+    stream
+        .context()
+        .bind_to_thread()
+        .map_err(|e| anyhow!("绑定 CUDA 上下文失败：{e}"))?;
     let st = stream.cu_stream();
     match dtype {
         DType::BF16 => {

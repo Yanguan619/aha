@@ -162,17 +162,25 @@ fn load_one(spec: &ModelSpec, opts: &InitOptions) -> anyhow::Result<StoredModel>
         };
         let model_path = string_to_static_str(path);
         // 只有 VLA 吃设备参数（candle 直接建模型）；别的回去默认 None→CPU。
+        // CUDA 上走 bf16（和 examples/turbovla_bench 一致）：f16 会在掩码/极值上溢出成
+        // NaN，f32 用不到融化的 cuBLASLt bias epilogue + CUDA graph 那条快路径。
         #[cfg(feature = "vla")]
-        let device = if model_type.is_vla_model() {
-            vla_device(opts.vla_device.as_deref().unwrap_or(&opts.device))?
+        let (device, dtype) = if model_type.is_vla_model() {
+            let dev = vla_device(opts.vla_device.as_deref().unwrap_or(&opts.device))?;
+            let dtype = if matches!(&dev, Some(candle_core::Device::Cuda(_))) {
+                Some(candle_core::DType::BF16)
+            } else {
+                None
+            };
+            (dev, dtype)
         } else {
-            None
+            (None, None)
         };
         #[cfg(not(feature = "vla"))]
-        let device: Option<Device> = None;
+        let (device, dtype): (Option<Device>, Option<candle_core::DType>) = (None, None);
         StoredModel {
             which_model: model_type,
-            instance: load_model(model_type, model_path, device.as_ref(), None, threads)?,
+            instance: load_model(model_type, model_path, device.as_ref(), dtype, threads)?,
         }
     };
     Ok(instance)

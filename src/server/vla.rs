@@ -77,7 +77,11 @@ pub async fn handle_actions(body: Bytes) -> Response {
         Ok(actions) => {
             let horizon = model.horizon();
             let action_dim = model.action_dim();
-            match actions.squeeze(0).and_then(|t| t.to_vec2::<f32>()) {
+            // 模型在 CUDA 上跑 bf16，动作张量要先转回 f32 才能 to_vec2。
+            match actions
+                .squeeze(0)
+                .and_then(|t| t.to_dtype(candle_core::DType::F32))
+                .and_then(|t| t.to_vec2::<f32>()) {
                 Ok(rows) => Json(json!({
                     "actions": rows,
                     "horizon": horizon,

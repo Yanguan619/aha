@@ -138,7 +138,8 @@ pub struct TurboVlaModel {
     zero_fill: bool,
     /// 指令 → 文本侧的各阶段张量（BERT 段只跟指令有关，可直接复用）。
     text_cache: Mutex<HashMap<(String, usize), TextFeat>>,
-    /// `TURBOVLA_GRAPH=1` 时，CUDA 上尝试用 graph 重放。
+    /// CUDA graph 默认开启（CUDA 上每帧只做 H2D + 一次 launch）；
+    /// `TURBOVLA_GRAPH=0` 关掉，捕获失败自动退回逐算子。
     graph_on: std::sync::atomic::AtomicBool,
     #[cfg(feature = "cuda")]
     graph_slot: Mutex<Option<GraphSlot>>,
@@ -225,7 +226,7 @@ impl TurboVlaModel {
             zero_fill: cfg.interaction.padding_strategy == "zero_fill",
             text_cache: Mutex::new(HashMap::new()),
             graph_on: std::sync::atomic::AtomicBool::new(
-                std::env::var("TURBOVLA_GRAPH").map(|v| v == "1").unwrap_or(false),
+                std::env::var("TURBOVLA_GRAPH").map(|v| v != "0").unwrap_or(true),
             ),
 
             #[cfg(feature = "cuda")]
