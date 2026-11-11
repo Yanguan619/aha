@@ -138,6 +138,34 @@ impl ZhFrontend {
         self.symbols.len()
     }
 
+    /// 按标点切成适合**流式合成**的片段。
+    ///
+    /// 和 [`Self::g2p`] 里的切分同一套标点，但多一条约束：太短的片段会并到下一段。
+    /// 单字/两三个字送进 AR 会因为上下文不足很快吐 EOS，韵律和音质都差；而流式的
+    /// 意义是「尽早出声」，片段切太碎反而得不偿失。
+    ///
+    /// `min_chars` 是片段的最短长度（按字符数）。末尾剩下的碎片会并到最后一个片段。
+    pub fn split_for_streaming(&self, text: &str, min_chars: usize) -> Vec<String> {
+        let norm = self.normalizer.normalize(text);
+        let parts = split_sentences(&norm, &self.punctuation);
+        let mut out: Vec<String> = Vec::new();
+        let mut pending = String::new();
+        for part in parts {
+            pending.push_str(&part);
+            if pending.chars().count() >= min_chars {
+                out.push(std::mem::take(&mut pending));
+            }
+        }
+        if !pending.is_empty() {
+            match out.last_mut() {
+                // 尾巴太短：并到最后一段，别单独送一次 AR。
+                Some(last) => last.push_str(&pending),
+                None => out.push(pending),
+            }
+        }
+        out
+    }
+
     /// 文本 → phones / word2ph。等价于 `chinese2.text_normalize` + `chinese2.g2p`。
     pub fn g2p(&self, text: &str) -> Result<G2pOutput> {
         let norm_text = self.normalizer.normalize(text);
@@ -368,5 +396,38 @@ mod tests {
         // 零声母：yin2 -> ("", "in2") -> pinyin "in" -> "yin"
         assert_eq!(PINYIN_REP_MAP.iter().find(|(k, _)| *k == "in").unwrap().1, "yin");
         assert_eq!(V_REP_MAP.iter().find(|(k, _)| *k == "uei").unwrap().1, "ui");
+    }
+
+    /// 流式切分：按标点切，但太短的片段要并到下一段（不留碎片送 AR）。
+    #[test]
+    fn streaming_split_merges_short_fragments() {
+        let punct: HashSet<char> = ['。', '！', '？', '，', '；', '\n'].into_iter().collect();
+        // 直接测纯切分逻辑（不依赖 ZhFrontend 的词典）：
+        // "你好。走吧。今天天气真不错，我们出去逛逛吧。"
+        let parts = normalize::split_sentences("你好。走吧。今天天气真不错，我们出去逛逛吧。", &punct);
+        assert_eq!(
+            parts,
+            vec!["你好。", "走吧。", "今天天气真不错，", "我们出去逛逛吧。"]
+        );
+
+        // 模拟 split_for_streaming 的合并：min_chars=8 时前两句应该并成一段。
+        let mut out: Vec<String> = Vec::new();
+        let mut pending = String::new();
+        for p in parts {
+            pending.push_str(&p);
+            if pending.chars().count() >= 8 {
+                out.push(std::mem::take(&mut pending));
+            }
+        }
+        if !pending.is_empty() {
+            match out.last_mut() {
+                Some(last) => last.push_str(&pending),
+                None => out.push(pending),
+            }
+        }
+        assert_eq!(out, vec!["你好。走吧。今天天气真不错，", "我们出去逛逛吧。"]);
+        // 关键性质：没有一段是空的，且拼起来等于原文。
+        assert!(out.iter().all(|s| !s.trim().is_empty()));
+        assert_eq!(out.concat(), "你好。走吧。今天天气真不错，我们出去逛逛吧。");
     }
 }

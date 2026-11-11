@@ -138,12 +138,26 @@ pub struct TurboVlaModel {
     zero_fill: bool,
     /// 指令 → 文本侧的各阶段张量（BERT 段只跟指令有关，可直接复用）。
     text_cache: Mutex<HashMap<(String, usize), TextFeat>>,
+    /// `text_cache` 的访问序（队尾 = 最近用过），用于 LRU 驱逐。
+    text_order: Mutex<Vec<(String, usize)>>,
     /// CUDA graph 默认开启（CUDA 上每帧只做 H2D + 一次 launch）；
     /// `TURBOVLA_GRAPH=0` 关掉，捕获失败自动退回逐算子。
     graph_on: std::sync::atomic::AtomicBool,
+    /// 已捕获的 CUDA graph（LRU，最多 [`MAX_GRAPH_SLOTS`] 个槽）。
     #[cfg(feature = "cuda")]
-    graph_slot: Mutex<Option<GraphSlot>>,
+    graphs: Mutex<Vec<GraphSlot>>,
 }
+
+/// 最多同时保留多少张已捕获的图。
+///
+/// 桌宠的指令是一个小集合（"看屏幕"、"走两步"…），2 张就够覆盖交替；给到 3
+/// 留一点余量。每张图占一份图私有显存池 + 文本特征（几 MB 量级），再多就该
+/// 考虑按使用频次驱逐了。
+#[cfg(feature = "cuda")]
+const MAX_GRAPH_SLOTS: usize = 3;
+
+/// 文本特征缓存容量。每条是一个 BERT 段的结果（几 MB 显存）。
+const TEXT_CACHE_CAP: usize = 8;
 
 #[cfg(feature = "cuda")]
 struct GraphSlot {
@@ -225,12 +239,13 @@ impl TurboVlaModel {
             pad_len_by_instruction: cfg.text.padding_length_by_instruction.clone(),
             zero_fill: cfg.interaction.padding_strategy == "zero_fill",
             text_cache: Mutex::new(HashMap::new()),
+            text_order: Mutex::new(Vec::new()),
             graph_on: std::sync::atomic::AtomicBool::new(
                 std::env::var("TURBOVLA_GRAPH").map(|v| v != "0").unwrap_or(true),
             ),
 
             #[cfg(feature = "cuda")]
-            graph_slot: Mutex::new(None),
+            graphs: Mutex::new(Vec::new()),
         })
     }
 
@@ -307,15 +322,18 @@ impl TurboVlaModel {
         let pixel_host = self.pixel_host(images)?;
         let state_host = normalize_state(state);
 
-        let mut slot = self.graph_slot.lock().unwrap();
-        if let Some(s) = slot.as_ref() {
-            if s.key == key {
-                s.runner.upload(&pixel_host, &state_host)?;
-                return s.runner.replay();
-            }
+        let mut graphs = self.graphs.lock().unwrap();
+        // 命中：把这一槽挪到末尾（LRU 语义），再重放。
+        if let Some(pos) = graphs.iter().position(|s| s.key == key) {
+            let slot = graphs.remove(pos);
+            slot.runner.upload(&pixel_host, &state_host)?;
+            let out = slot.runner.replay()?;
+            graphs.push(slot);
+            return Ok(out);
         }
 
-        // 捕获（参数变了就重捕一次）
+        // 未命中：捕一张新图。参数（指令 / 组长 / 视角数）变了就必须重捕——
+        // 图把张量地址和形状都烧死了，没法复用。
         let feat = self.text_features(instruction, group_len, pad_len)?;
         let runner = crate::models::turbovla::graph::GraphRunner::try_capture(
             &self.device,
@@ -332,7 +350,11 @@ impl TurboVlaModel {
 
         // 捕获时用的就是这一帧的输入，直接重放一次拿到结果
         let first = runner.replay()?;
-        *slot = Some(GraphSlot {
+        // 超出容量就淘汰最久没用的那一槽（Vec 头部 = 最久未命中）。
+        if graphs.len() >= MAX_GRAPH_SLOTS {
+            graphs.remove(0);
+        }
+        graphs.push(GraphSlot {
             key,
             feat,
             runner,
@@ -457,10 +479,21 @@ impl TurboVlaModel {
     }
 
     /// 文本侧各阶段：同一 (instruction, group_len) 只算一次。
+    ///
+    /// 缓存是 LRU 语义（`HashMap` + 插入顺序无能为力，所以用一个旁路队列记访问序），
+    /// 溢出时只淘汰**最久没用的一条**，而不是像早期那样 `clear()` 全清。
+    /// 桌宠的指令是小集合但会来回切换，全清等于每次切回来都要重跑 BERT
+    /// （一条 ~100ms），比不缓存还糟。
     fn text_features(&self, instruction: &str, group_len: usize, pad_len: usize) -> Result<TextFeat> {
         let key = (instruction.to_string(), group_len);
-        if let Some(hit) = self.text_cache.lock().unwrap().get(&key) {
-            return Ok(hit.clone());
+        {
+            let mut cache = self.text_cache.lock().unwrap();
+            if let Some(hit) = cache.get(&key) {
+                let feat = hit.clone();
+                // 刷新访问序：把它挪到队尾。
+                self.touch_text_key(&key);
+                return Ok(feat);
+            }
         }
 
         let enc = self.text.encode(instruction, group_len)?;
@@ -489,11 +522,28 @@ impl TurboVlaModel {
         };
 
         let mut cache = self.text_cache.lock().unwrap();
-        if cache.len() >= 8 {
-            cache.clear();
+        if cache.len() >= TEXT_CACHE_CAP && !cache.contains_key(&key) {
+            // 淘汰最久没用的那条（`order` 头部）。order 里可能有已被淘汰的陈旧键，跳过。
+            let mut order = self.text_order.lock().unwrap();
+            while let Some(oldest) = order.first().cloned() {
+                order.remove(0);
+                if cache.remove(&oldest).is_some() {
+                    break;
+                }
+            }
         }
-        cache.insert(key, feat.clone());
+        cache.insert(key.clone(), feat.clone());
+        self.text_order.lock().unwrap().push(key);
         Ok(feat)
+    }
+
+    /// 把某个键挪到访问序的队尾（LRU 的「刚刚用过」）。
+    fn touch_text_key(&self, key: &(String, usize)) {
+        let mut order = self.text_order.lock().unwrap();
+        if let Some(pos) = order.iter().position(|k| k == key) {
+            let k = order.remove(pos);
+            order.push(k);
+        }
     }
 }
 

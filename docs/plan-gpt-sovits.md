@@ -332,7 +332,7 @@ AR 生成语义 token: 31 个
 - `WhichModel::GptSovits`（`--features gpt-sovits`，模型 id `gpt-sovits-v2pro-zh`）+ `model_type() = "tts"`；
 - `aha run -m gpt-sovits-v2pro-zh --weight-path <dir> -i "你好" -o out.wav`；
 - `aha serv -m gpt-sovits-v2pro-zh --weight-path <dir> -p 10100` → `POST /v1/tts` 返回 32 kHz WAV
-  （`/v1/tts/stream` 仍是 sherpa 专用）。
+  （`/v1/tts/stream` 见下）。
 
 音色定义在模型目录的 `voices.json`：
 
@@ -357,6 +357,22 @@ POST /v1/tts → 200，519,724 字节 = 259,840 采样点 @32 kHz（8.1 s）
 
 `/v1/tts` 已有 `{text, voice?, speed?}`，GPT-SoVITS 的 `voice` 解释为「音色配置名」，
 配置在模型目录的 `voices.json`：
+
+### 流式合成 `/v1/tts/stream`
+
+按标点把文本切成片段（短于 8 个字的片段会并到下一段），逐段合成、逐段推
+PCM16LE。响应头 `X-Audio-Rate: 32000`、`X-Audio-Channels: 1`，body 无 WAV 头。
+
+首音频延迟从「整段合成完」降到「第一句合成完」。实测（CPU，4 句文本，
+预热后中位）：
+
+| 模式 | 首音频 | 总时长 |
+|---|---|---|
+| `/v1/tts`（整段） | 7875 ms | 7875 ms |
+| `/v1/tts/stream`（按句） | **2734 ms** | 6705 ms |
+
+短文本（单句）两者一致，没有额外开销。
+
 
 ```json
 {

@@ -21,7 +21,7 @@
 #[cfg(any(feature = "sherpa", feature = "gpt-sovits"))]
 use std::time::Instant;
 
-#[cfg(feature = "sherpa")]
+#[cfg(any(feature = "sherpa", feature = "gpt-sovits"))]
 use axum::body::Body;
 use axum::{
     Json,
@@ -78,7 +78,7 @@ pub async fn handle_asr(headers: HeaderMap, body: Bytes) -> Response {
             ),
         );
     };
-    match model.transcribe(&samples) {
+    match tokio::task::block_in_place(|| model.transcribe(&samples)) {
         Ok(text) => {
             let took = started.elapsed().as_millis();
             tracing::info!(dur_ms, took_ms = took, ?text, "ASR 识别完成");
@@ -174,7 +174,7 @@ pub async fn handle_tts(body: Bytes) -> Response {
             .voices()
             .contains(&voice.as_str())
             .then_some(voice.as_str());
-        return match sovits.synthesize(&text, voice, speed) {
+        return match tokio::task::block_in_place(|| sovits.synthesize(&text, voice, speed)) {
             Ok(audio) => {
                 let wav = match audio.squeeze(0) {
                     Ok(flat) => aha::utils::audio_utils::get_audio_wav_u8(
@@ -230,7 +230,7 @@ pub async fn handle_tts(body: Bytes) -> Response {
         );
     };
     #[cfg(feature = "sherpa")]
-    match model.synthesize_wav(&text, &voice, speed) {
+    match tokio::task::block_in_place(|| model.synthesize_wav(&text, &voice, speed)) {
         Ok(wav) => {
             tracing::info!(
                 bytes = wav.len(),
@@ -251,12 +251,15 @@ pub async fn handle_tts(body: Bytes) -> Response {
 
 /// `POST /v1/tts/stream` —— 边合成边吐裸 PCM16LE，桌宠 `mouth.speakStream` 用它边收边播。
 ///
-/// 响应头：`X-Audio-Rate`（模型自报，Kokoro 是 24k）、`X-Audio-Channels: 1`。
+/// 响应头：`X-Audio-Rate`（模型自报，Kokoro 24k / GPT-SoVITS 32k）、`X-Audio-Channels: 1`。
 /// body：PCM16LE 小端，无 WAV 头。
 ///
-/// 合成放在 `block_in_place` 里跑（sherpa 的 C 接口是阻塞的），每生成一帧就通过
-/// channel 推给响应流，所以首帧延迟 ≈ 一句的第一个分块，而不是整句合成完。
-#[cfg(feature = "sherpa")]
+/// 两个后端的流式机制不同但对外一致：
+/// - **Kokoro（sherpa）**：声码器本身就能边合成边回调，粒度是帧；
+/// - **GPT-SoVITS**：按标点切片，逐片合成，粒度是句。
+///
+/// 两者都在 `block_in_place` 里跑（推理是阻塞的），每块通过 channel 推给响应流。
+#[cfg(any(feature = "sherpa", feature = "gpt-sovits"))]
 pub async fn handle_tts_stream(body: Bytes) -> Response {
     let (text, voice, speed) = match parse_tts_request(&body) {
         Ok(parsed) => parsed,
@@ -270,9 +273,23 @@ pub async fn handle_tts_stream(body: Bytes) -> Response {
     // 先读一把采样率：响应头必须在 body 开始流动之前定下来。
     let sample_rate = {
         let guard = model_ref.read().await;
-        let Some(model) = guard.instance.tts_model() else {
-            // 不是 sherpa 的模型（例如 GPT-SoVITS）就没有流式这条实现：回 404，
-            // 桌宠的 mouth 靠它判断"这条后端没有 /tts/stream"，退回整段 /v1/tts。
+        #[cfg(feature = "sherpa")]
+        if let Some(model) = guard.instance.tts_model() {
+            model.sample_rate()
+        } else {
+            #[cfg(feature = "gpt-sovits")]
+            if let Some(model) = guard.instance.gpt_sovits_model() {
+                model.sample_rate() as i32
+            } else {
+                return error_json(
+                    StatusCode::NOT_FOUND,
+                    format!(
+                        "当前模型 {} 不支持流式合成",
+                        guard.which_model.as_string()
+                    ),
+                );
+            }
+            #[cfg(not(feature = "gpt-sovits"))]
             return error_json(
                 StatusCode::NOT_FOUND,
                 format!(
@@ -280,29 +297,75 @@ pub async fn handle_tts_stream(body: Bytes) -> Response {
                     guard.which_model.as_string()
                 ),
             );
-        };
-        model.sample_rate()
+        }
+        #[cfg(not(feature = "sherpa"))]
+        {
+            #[cfg(feature = "gpt-sovits")]
+            if let Some(model) = guard.instance.gpt_sovits_model() {
+                model.sample_rate() as i32
+            } else {
+                return error_json(
+                    StatusCode::NOT_FOUND,
+                    format!(
+                        "当前模型 {} 不支持流式合成",
+                        guard.which_model.as_string()
+                    ),
+                );
+            }
+            #[cfg(not(feature = "gpt-sovits"))]
+            return error_json(
+                StatusCode::NOT_FOUND,
+                format!(
+                    "当前模型 {} 不支持流式合成",
+                    guard.which_model.as_string()
+                ),
+            );
+        }
     };
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
     tokio::spawn(async move {
         // 写锁覆盖整段合成：合成器不是并发安全的。
         let guard = model_ref.write().await;
-        let Some(model) = guard.instance.tts_model() else {
+
+        #[cfg(feature = "sherpa")]
+        if let Some(model) = guard.instance.tts_model() {
+            // Kokoro 的流式接口要求闭包 `'static`（sherpa 的 C 回调生命周期），
+            // 所以这里把 tx move 进去，转换也内联。
+            let tx = tx;
+            let result = tokio::task::block_in_place(|| {
+                model.synthesize_pcm_stream(&text, &voice, speed, move |pcm| {
+                    let mut bytes = Vec::with_capacity(pcm.len() * 2);
+                    for sample in pcm {
+                        bytes.extend_from_slice(&sample.to_le_bytes());
+                    }
+                    // 接收端断了（客户端提前挂断）就停止合成。
+                    tx.blocking_send(bytes).is_ok()
+                })
+            });
+            if let Err(error) = result {
+                tracing::error!(%error, "流式合成失败");
+            }
             return;
-        };
-        let result = tokio::task::block_in_place(move || {
-            model.synthesize_pcm_stream(&text, &voice, speed, move |pcm| {
-                let mut bytes = Vec::with_capacity(pcm.len() * 2);
-                for sample in pcm {
-                    bytes.extend_from_slice(&sample.to_le_bytes());
-                }
-                // 接收端断了（客户端提前挂断）就停止合成。
-                tx.blocking_send(bytes).is_ok()
-            })
-        });
-        if let Err(error) = result {
-            tracing::error!(%error, "流式合成失败");
+        }
+        #[cfg(feature = "gpt-sovits")]
+        if let Some(model) = guard.instance.gpt_sovits_model() {
+            let voice = model
+                .voices()
+                .contains(&voice.as_str())
+                .then_some(voice.as_str());
+            let result = tokio::task::block_in_place(|| {
+                model.synthesize_pcm_stream(&text, voice, speed, |pcm| {
+                    let mut bytes = Vec::with_capacity(pcm.len() * 2);
+                    for sample in pcm {
+                        bytes.extend_from_slice(&sample.to_le_bytes());
+                    }
+                    tx.blocking_send(bytes).is_ok()
+                })
+            });
+            if let Err(error) = result {
+                tracing::error!(%error, "流式合成失败");
+            }
         }
     });
 

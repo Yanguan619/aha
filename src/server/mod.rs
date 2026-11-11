@@ -122,11 +122,11 @@ fn build_router(shutdown_flag: Arc<AtomicBool>) -> Router {
     // 由 sherpa 后端提供，/v1/decisions（Laya 决策，System-1 类模型）由 laya 后端提供；
     // 没开对应 feature 时这些端点不存在。
     #[cfg(any(feature = "sherpa", feature = "gpt-sovits"))]
-    let app = app.route("/v1/tts", post(deskpet::handle_tts));
-    #[cfg(feature = "sherpa")]
     let app = app
-        .route("/v1/asr", post(deskpet::handle_asr))
+        .route("/v1/tts", post(deskpet::handle_tts))
         .route("/v1/tts/stream", post(deskpet::handle_tts_stream));
+    #[cfg(feature = "sherpa")]
+    let app = app.route("/v1/asr", post(deskpet::handle_asr));
     #[cfg(feature = "laya")]
     let app = app.route("/v1/decisions", post(deskpet::handle_route));
     #[cfg(feature = "vla")]

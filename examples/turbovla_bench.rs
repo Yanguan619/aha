@@ -19,12 +19,14 @@ fn main() -> anyhow::Result<()> {
     let mut f32 = false;
     let mut verify = false;
     let mut no_stages = false;
+    let mut interleave = false;
     for a in args {
         match a.as_str() {
             "--cpu" => cpu = true,
             "--f32" => f32 = true,
             "--verify" => verify = true,
             "--no-stages" => no_stages = true,
+            "--interleave" => interleave = true,
             s => iters = s.parse().unwrap_or(iters),
         }
     }
@@ -152,5 +154,30 @@ fn main() -> anyhow::Result<()> {
     );
     let first = actions.squeeze(0)?.narrow(0, 0, 1)?.to_dtype(DType::F32)?.to_vec2::<f32>()?;
     println!("action[0] = {:?}", first[0]);
+
+    // 交错指令：验证多槽 graph 缓存（桌宠的指令会来回切换）。
+    //
+    // 单槽时「指令 A → 指令 B → 指令 A」每次都重抓（~100ms）；
+    // 多槽时第二次回到 A 应该命中，延迟回到稳态。
+    if interleave {
+        println!("\n--- 交错指令（3 条轮换，各 3 轮）---");
+        let instrs = [
+            "put the bowl on the plate",
+            "open the top drawer",
+            "move the mug to the left",
+        ];
+        for round in 0..3 {
+            let mut row = Vec::with_capacity(instrs.len());
+            for ins in instrs {
+                let t = Instant::now();
+                let out = model.predict(&images, ins, &state)?;
+                out.to_dtype(DType::F32)?.to_vec3::<f32>()?;
+                device.synchronize()?;
+                row.push(format!("{:.1}", t.elapsed().as_secs_f64() * 1e3));
+            }
+            println!("  第 {} 轮：{} ms", round + 1, row.join(" / "));
+        }
+        println!("  （第 1 轮是各自首次捕获；第 2 轮起应回到稳态说明多槽命中）");
+    }
     Ok(())
 }

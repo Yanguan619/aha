@@ -32,6 +32,13 @@ use super::t2s::{GenOptions, Text2Semantic};
 use super::text_frontend::ZhFrontend;
 use super::wordpiece::WordPieceTokenizer;
 
+/// 流式合成时一个片段的最短长度（字符数）。
+///
+/// 太短的片段（"嗯。""好。"）送进 AR 会因上下文不足很快吐 EOS，韵律差；
+/// 而流式的收益是「尽早出声」，切太碎反而两边不讨好。8 个字大约是一个
+/// 完整短句，既能开始播音又不至于碎。
+const MIN_STREAM_CLAUSE_CHARS: usize = 8;
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct VoiceConfig {
     /// 参考音频（相对路径基于模型目录）
@@ -146,19 +153,80 @@ impl GptSovitsModel {
 
     /// 文本 → 波形 `(1, 1, N)`。
     pub fn synthesize(&self, text: &str, voice: Option<&str>, speed: f32) -> Result<Tensor> {
+        let cfg = self.resolve_voice(voice)?;
+        // 1) 参考音频 → prompt codes + ge（+ 有 ref_text 时的参考文本特征）
+        let ref_feat = self.prepare_reference(cfg)?;
+        self.synthesize_clause(text, cfg, &ref_feat, speed)
+    }
+
+    /// 边合成边吐 **PCM16LE**（桌宠 `POST /tts/stream` 用）。
+    ///
+    /// # 为什么按句切
+    ///
+    /// 整段合成时，「第一个音频样本」要等**全部** AR 解码 + 全部声码器跑完才出来；
+    /// 长文本下这段等待是几秒。按标点切成片段逐段合成，首段出来就能开始播音——
+    /// 首音频延迟从「整段」降到「第一句」。
+    ///
+    /// 片段之间是自然的句读停顿，不额外插静音。
+    ///
+    /// 回调拿到的是**这一段**的样本，返回 `false` 可以中止（客户端挂断时用）。
+    pub fn synthesize_pcm_stream<F>(
+        &self,
+        text: &str,
+        voice: Option<&str>,
+        speed: f32,
+        mut emit: F,
+    ) -> Result<()>
+    where
+        F: FnMut(&[i16]) -> bool,
+    {
+        let cfg = self.resolve_voice(voice)?;
+        // 参考特征只算一次，所有片段共用。
+        let ref_feat = self.prepare_reference(cfg)?;
+        let clauses = self.frontend.split_for_streaming(text, MIN_STREAM_CLAUSE_CHARS);
+        if clauses.is_empty() {
+            bail!("文本里没有可发音内容：{text:?}");
+        }
+        for clause in clauses {
+            let wave = self.synthesize_clause(&clause, cfg, &ref_feat, speed)?;
+            let samples = wave
+                .squeeze(0)?
+                .squeeze(0)?
+                .to_dtype(DType::F32)?
+                .to_vec1::<f32>()?;
+            let pcm: Vec<i16> = samples
+                .iter()
+                .map(|s| (s.clamp(-1.0, 1.0) * 32767.0).round() as i16)
+                .collect();
+            if !emit(&pcm) {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// 解析音色名（没给就用默认的）。
+    fn resolve_voice(&self, voice: Option<&str>) -> Result<&VoiceConfig> {
         let name = voice
             .map(|v| v.to_string())
             .or_else(|| self.default_voice.clone())
-            .ok_or_else(|| anyhow::anyhow!("没有可用的音色：请在模型目录里放 voices.json（或 ref.wav）"))?;
-        let cfg = self
-            .voices
+            .ok_or_else(|| {
+                anyhow::anyhow!("没有可用的音色：请在模型目录里放 voices.json（或 ref.wav）")
+            })?;
+        self.voices
             .get(&name)
-            .ok_or_else(|| anyhow::anyhow!("voices.json 里没有音色 {name:?}"))?;
+            .ok_or_else(|| anyhow::anyhow!("voices.json 里没有音色 {name:?}"))
+    }
 
-        // 1) 参考音频 → prompt codes + ge（+ 有 ref_text 时的参考文本特征）
-        let ref_feat = self.prepare_reference(cfg)?;
-
-        // 2) 目标文本前端
+    /// 一段文本（不分句）→ 波形 `(1, 1, N)`。参考特征由调用方提供。
+    fn synthesize_clause(
+        &self,
+        text: &str,
+        cfg: &VoiceConfig,
+        ref_feat: &RefFeat,
+        speed: f32,
+    ) -> Result<Tensor> {
+        // 目标文本前端
         let g2p = self.frontend.g2p(text)?;
         if g2p.phones.is_empty() {
             bail!("文本里没有可发音内容：{text:?}");
@@ -168,7 +236,7 @@ impl GptSovitsModel {
             .bert
             .phone_level_feature(&g2p.norm_text, &self.tokenizer, &g2p.word2ph)?;
 
-        // 3) AR 的输入
+        // AR 的输入
         //
         // 官方 `TTS.py`：给了 `prompt_text` 时把**参考文本**的 phones/bert 接在目标文本
         // 前面（`torch.cat([prompt_bert, bert], 1)` + `prompt_phones + phones`），
@@ -188,7 +256,7 @@ impl GptSovitsModel {
             &[]
         };
 
-        // 4) AR 出语义 codes
+        // AR 出语义 codes
         //
         // 采样偶尔会一直不吐 EOS（一路跑到 1500 token ≈ 60 s 音频），所以按文本长度
         // 设一个上限：约每个 phone 12 帧、最少 48 帧，再兜一个 1500 的硬顶。
@@ -203,7 +271,7 @@ impl GptSovitsModel {
             bail!("AR 没有生成任何语义 token（文本 {text:?}）");
         }
 
-        // 5) SoVITS 合成（只吃目标文本的 phones）
+        // SoVITS 合成（只吃目标文本的 phones）
         let synth = SynthOptions {
             speed: cfg.speed.unwrap_or(speed),
             ..Default::default()
