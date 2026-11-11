@@ -182,7 +182,6 @@ fn load_one(spec: &ModelSpec, opts: &InitOptions) -> anyhow::Result<StoredModel>
             which_model: model_type,
             instance: load_model(model_type, model_path, device.as_ref(), dtype, threads)?,
         }
-        }
     };
     Ok(instance)
 }
