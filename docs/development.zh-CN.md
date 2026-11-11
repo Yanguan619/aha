@@ -64,6 +64,30 @@ cargo fmt
 cargo clippy
 ```
 
+### 本地 CI
+
+提交前跑一遍（跨平台，只要有 Python 3 和 cargo）：
+
+```bash
+python scripts/ci.py            # clippy + 多 feature 编译 + 测试
+python scripts/ci.py check      # 只做 feature 矩阵编译
+python scripts/ci.py test       # 只跑测试
+python scripts/ci.py check --cuda   # 额外验证 cuda 组合（要 nvcc）
+python scripts/ci.py fmt        # 就地格式化
+```
+
+为什么需要它：桌宠那几条链路（`/v1/asr`、`/v1/tts`、`/v1/tts/stream`、
+`/v1/decisions`、`/v1/actions`）全在 `cfg(feature = ...)` 后面，
+裸 `cargo check` 一行都编译不到——代码坏了也发现不了。
+`ci.py` 会按 6 组 feature 逐个编译，把这块补上。
+
+两个已知的既有问题（脚本里也写了）：
+
+- `cargo fmt --check` 会报上百处差异——仓库是用旧版 rustfmt 格式化的。
+  所以 `fmt` 是独立子命令，不塞进 `ci`。
+- `clippy -D warnings` 有 30 条既有 warning；默认只报不拦，清理完再用
+  `--deny` 收紧。
+
 ## 项目结构
 
 ```

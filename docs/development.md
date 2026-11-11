@@ -64,6 +64,30 @@ cargo fmt
 cargo clippy
 ```
 
+### Local CI
+
+Run this before committing (cross-platform: only needs Python 3 and cargo):
+
+```bash
+python scripts/ci.py            # clippy + multi-feature build + tests
+python scripts/ci.py check      # feature-matrix compile only
+python scripts/ci.py test       # tests only
+python scripts/ci.py check --cuda   # also verify the cuda combo (needs nvcc)
+python scripts/ci.py fmt        # apply formatting
+```
+
+Why it exists: the desktop-pet endpoints (`/v1/asr`, `/v1/tts`, `/v1/tts/stream`,
+`/v1/decisions`, `/v1/actions`) all sit behind `cfg(feature = ...)`, so a plain
+`cargo check` never compiles them — broken code there goes unnoticed. `ci.py`
+compiles 6 feature combinations to cover that.
+
+Two pre-existing issues (also noted inside the script):
+
+- `cargo fmt --check` reports hundreds of diffs — the repo was formatted with an
+  older rustfmt. So `fmt` is a separate subcommand, not part of `ci`.
+- `clippy -D warnings` fails on 30 pre-existing warnings; the default only reports
+  them. Use `--deny` once that backlog is cleared.
+
 ## Project Structure
 
 ```
