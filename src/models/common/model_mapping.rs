@@ -100,6 +100,10 @@ pub enum WhichModel {
     #[cfg(feature = "vla")]
     #[value(name = "OpenBMB/TurboVLA")]
     TurboVla,
+    /// GPT-SoVITS（本地转换的权重目录，不走 ModelScope）
+    #[cfg(feature = "gpt-sovits")]
+    #[value(name = "gpt-sovits-v2pro-zh")]
+    GptSovits,
 }
 
 impl WhichModel {
@@ -144,6 +148,12 @@ impl WhichModel {
     #[cfg(feature = "vla")]
     pub fn is_vla_model(&self) -> bool {
         matches!(self, WhichModel::TurboVla)
+    }
+
+    /// 本地转换的模型：权重由脚本生成，**不在 ModelScope 上**，必须显式给 `--weight-path`。
+    #[cfg(feature = "gpt-sovits")]
+    pub fn is_gpt_sovits_model(&self) -> bool {
+        matches!(self, WhichModel::GptSovits)
     }
 
     /// 桌宠委托的三个模型（SenseVoice / Kokoro / Laya）。
@@ -243,6 +253,8 @@ impl WhichModel {
             WhichModel::RMBG2_0 => "image",
             // TTS models
             WhichModel::VoxCPM | WhichModel::VoxCPM1_5 | WhichModel::VoxCPM2 => "tts",
+            #[cfg(feature = "gpt-sovits")]
+            WhichModel::GptSovits => "tts",
             WhichModel::Qwen3Embedding0_6B
             | WhichModel::Qwen3Embedding4B
             | WhichModel::Qwen3Embedding8B

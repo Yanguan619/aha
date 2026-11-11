@@ -1,4 +1,23 @@
 pub mod audio_utils;
+
+/// 解析 `--device`：`auto`（None，由模型自己决定）/ `cpu` / `cuda`。
+pub fn resolve_device(spec: &str) -> anyhow::Result<Option<candle_core::Device>> {
+    match spec.trim().to_ascii_lowercase().as_str() {
+        "" | "auto" => Ok(None),
+        "cpu" => Ok(Some(candle_core::Device::Cpu)),
+        "cuda" | "gpu" => {
+            #[cfg(feature = "cuda")]
+            {
+                Ok(Some(candle_core::Device::new_cuda(0)?))
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                anyhow::bail!("当前二进制没编译 cuda 支持，请用 --features cuda 重新构建")
+            }
+        }
+        other => anyhow::bail!("未知推理设备 {other:?}（可选 auto / cpu / cuda）"),
+    }
+}
 pub mod img_utils;
 pub mod interpolate;
 pub mod response_utils;

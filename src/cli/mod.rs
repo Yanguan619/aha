@@ -118,6 +118,13 @@ pub(crate) async fn run_cli(args: CliArgs) -> anyhow::Result<()> {
                          Download the model and pass --weight-path <dir>."
                     ));
                 }
+                #[cfg(feature = "gpt-sovits")]
+                if model.is_gpt_sovits_model() {
+                    return Err(anyhow!(
+                        "{model_id} 是本地转换的 GPT-SoVITS 权重，不在 ModelScope 上。\n\
+                         先用 scripts/gpt_sovits/convert_weights.py 转换，再传 --weight-path <dir>。"
+                    ));
+                }
                 let save_dir = match save_dir {
                     Some(dir) => dir,
                     None => get_default_save_dir().expect("Failed to get home directory"),
@@ -506,6 +513,15 @@ pub(crate) fn run_run(args: RunArgs) -> anyhow::Result<()> {
         #[cfg(feature = "sherpa")]
         WhichModel::Kokoro => {
             kokoro::KokoroExec::run(&input, output.as_deref(), &weight_path)?;
+        }
+        #[cfg(feature = "gpt-sovits")]
+        WhichModel::GptSovits => {
+            gpt_sovits::GptSovitsExec::run_with_device(
+                &input,
+                output.as_deref(),
+                &weight_path,
+                &path_common.device,
+            )?;
         }
         #[cfg(feature = "laya")]
         WhichModel::Laya => {

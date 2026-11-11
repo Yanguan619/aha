@@ -8,6 +8,8 @@ pub mod deepseek_ocr;
 pub mod fun_asr_nano;
 pub mod glm_asr_nano;
 pub mod glm_ocr;
+#[cfg(feature = "gpt-sovits")]
+pub mod gpt_sovits;
 pub mod hunyuan_ocr;
 #[cfg(feature = "sherpa")]
 pub mod kokoro;

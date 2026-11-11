@@ -161,9 +161,8 @@ fn load_one(spec: &ModelSpec, opts: &InitOptions) -> anyhow::Result<StoredModel>
             default_threads()
         };
         let model_path = string_to_static_str(path);
-        // 只有 VLA 吃设备参数（candle 直接建模型）；别的回去默认 None→CPU。
-        // CUDA 上走 bf16（和 examples/turbovla_bench 一致）：f16 会在掩码/极值上溢出成
-        // NaN，f32 用不到融化的 cuBLASLt bias epilogue + CUDA graph 那条快路径。
+        // VLA 吃自己的设备参数（--vla-device），CUDA 上走 bf16（f16 会溢出成 NaN）。
+        // 其他模型（GPT-SoVITS 等）走通用的 --device（auto / cpu / cuda）。
         #[cfg(feature = "vla")]
         let (device, dtype) = if model_type.is_vla_model() {
             let dev = vla_device(opts.vla_device.as_deref().unwrap_or(&opts.device))?;
@@ -174,13 +173,15 @@ fn load_one(spec: &ModelSpec, opts: &InitOptions) -> anyhow::Result<StoredModel>
             };
             (dev, dtype)
         } else {
-            (None, None)
+            (aha::utils::resolve_device(&opts.device)?, None)
         };
         #[cfg(not(feature = "vla"))]
-        let (device, dtype): (Option<Device>, Option<candle_core::DType>) = (None, None);
+        let (device, dtype): (Option<Device>, Option<candle_core::DType>) =
+            (aha::utils::resolve_device(&opts.device)?, None);
         StoredModel {
             which_model: model_type,
             instance: load_model(model_type, model_path, device.as_ref(), dtype, threads)?,
+        }
         }
     };
     Ok(instance)
@@ -231,6 +232,10 @@ fn role_of(model: WhichModel) -> Option<&'static str> {
     #[cfg(feature = "vla")]
     if model.is_vla_model() {
         return Some("vla");
+    }
+    #[cfg(feature = "gpt-sovits")]
+    if model.is_gpt_sovits_model() {
+        return Some("tts");
     }
     None
 }

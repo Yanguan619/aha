@@ -90,6 +90,10 @@ pub(crate) struct PathCommonArgs {
     /// config path for onnx/gguf model need extra config file
     #[arg(long)]
     pub config_path: Option<String>,
+
+    /// 推理设备：`cpu` / `cuda` / `auto`（默认 auto：编译进了 cuda 就用 GPU）
+    #[arg(long, default_value = "auto")]
+    pub device: String,
 }
 
 /// Arguments for the 'cli' subcommand (download + serve)

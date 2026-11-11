@@ -64,6 +64,9 @@ tracing = "0.1"
 sherpa-onnx = { version = "2.0.1", optional = true, default-features = false }
 # Optional: Laya decision model (sys1 / candle), served by the `route` endpoint.
 sys1 = { version = "0.0.3", optional = true, default-features = false, features = ["cpu"] }
+# Optional: GPT-SoVITS 中文前端分词。不内嵌词典（default-dict 关闭），
+# 词典用模型目录里导出的 dict.txt，顺便提供词性（jieba.tag）。
+jieba-rs = { version = "0.11", optional = true, default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 # --parent-pid watchdog: 桌宠退出时跟着收工（移植自旧 asr/tts/laya-route）。
@@ -81,6 +84,8 @@ laya = ["dep:sys1"]
 laya-cuda = ["dep:sys1", "sys1/cuda", "cuda"]
 # 可选：TurboVLA（视觉-语言-动作）。基于 candle 的 BERT/DINOv3 + 自写融合/动作头。
 vla = []
+# Optional: GPT-SoVITS（v2Pro 中文）。文本前端 + AR + SoVITS 合成器。
+gpt-sovits = ["dep:jieba-rs"]
 # 可选：让 candle 的 CPU matmul 走 Intel MKL（比纯 Rust gemm 快，用来补 Laya CPU 的差距）。
 # 代价：intel-mkl-src 首次构建要下载 ~1GB MKL，静态链接会让 exe 明显变大。
 mkl = ["candle-core/mkl", "candle-nn/mkl"]

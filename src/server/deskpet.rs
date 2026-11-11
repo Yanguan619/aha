@@ -18,7 +18,7 @@
 //! 每个模型有自己的一把写锁（见 `api::registry`）：三个角色可以并发，但同一模型
 //! 一次只放一个请求进推理（sherpa/sys1 都不是并发安全的）。
 
-#[cfg(feature = "sherpa")]
+#[cfg(any(feature = "sherpa", feature = "gpt-sovits"))]
 use std::time::Instant;
 
 #[cfg(feature = "sherpa")]
@@ -120,7 +120,7 @@ fn check_asr_request(headers: &HeaderMap, len: usize) -> Option<String> {
 // POST /v1/tts —— {text,voice?,speed?} → audio/wav
 // --------------------------------------------------------------------------- //
 
-#[cfg(feature = "sherpa")]
+#[cfg(any(feature = "sherpa", feature = "gpt-sovits"))]
 #[derive(serde::Deserialize)]
 struct TtsRequest {
     #[serde(default)]
@@ -134,7 +134,7 @@ struct TtsRequest {
 /// 解析 `/v1/tts` 和 `/v1/tts/stream` 共用的请求体。
 ///
 /// 错误直接返回 `Response`（`clippy::result_large_err`：为了省一次 match 不理它）。
-#[cfg(feature = "sherpa")]
+#[cfg(any(feature = "sherpa", feature = "gpt-sovits"))]
 #[allow(clippy::result_large_err)]
 fn parse_tts_request(body: &[u8]) -> Result<(String, String, f32), Response> {
     if body.is_empty() {
@@ -154,7 +154,7 @@ fn parse_tts_request(body: &[u8]) -> Result<(String, String, f32), Response> {
     Ok((text, voice, speed))
 }
 
-#[cfg(feature = "sherpa")]
+#[cfg(any(feature = "sherpa", feature = "gpt-sovits"))]
 pub async fn handle_tts(body: Bytes) -> Response {
     let (text, voice, speed) = match parse_tts_request(&body) {
         Ok(parsed) => parsed,
@@ -166,6 +166,60 @@ pub async fn handle_tts(body: Bytes) -> Response {
         return error_json(StatusCode::SERVICE_UNAVAILABLE, "模型没有初始化");
     };
     let guard = model_ref.write().await;
+
+    // GPT-SoVITS：32 kHz，音色由模型目录的 voices.json 决定
+    #[cfg(feature = "gpt-sovits")]
+    if let Some(sovits) = guard.instance.gpt_sovits_model() {
+        let voice = sovits
+            .voices()
+            .contains(&voice.as_str())
+            .then_some(voice.as_str());
+        return match sovits.synthesize(&text, voice, speed) {
+            Ok(audio) => {
+                let wav = match audio.squeeze(0) {
+                    Ok(flat) => aha::utils::audio_utils::get_audio_wav_u8(
+                        &flat,
+                        sovits.sample_rate() as u32,
+                    ),
+                    Err(error) => Err(error.into()),
+                };
+                match wav {
+                    Ok(wav) => {
+                        tracing::info!(
+                            bytes = wav.len(),
+                            took_ms = started.elapsed().as_millis(),
+                            "gpt-sovits 合成完成"
+                        );
+                        ([(header::CONTENT_TYPE, "audio/wav")], wav).into_response()
+                    }
+                    Err(error) => error_json(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("生成 WAV 失败：{error:#}"),
+                    ),
+                }
+            }
+            Err(error) => {
+                tracing::error!(%error, "gpt-sovits 合成失败");
+                error_json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("合成失败：{error:#}"),
+                )
+            }
+        };
+    }
+
+    #[cfg(not(feature = "sherpa"))]
+    {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "当前模型 {} 不是 GPT-SoVITS，无法合成",
+                guard.which_model.as_string()
+            ),
+        );
+    }
+
+    #[cfg(feature = "sherpa")]
     let Some(model) = guard.instance.tts_model() else {
         return error_json(
             StatusCode::BAD_REQUEST,
@@ -175,6 +229,7 @@ pub async fn handle_tts(body: Bytes) -> Response {
             ),
         );
     };
+    #[cfg(feature = "sherpa")]
     match model.synthesize_wav(&text, &voice, speed) {
         Ok(wav) => {
             tracing::info!(

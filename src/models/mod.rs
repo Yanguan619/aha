@@ -7,6 +7,8 @@ pub mod feature_extractor;
 pub mod fun_asr_nano;
 pub mod glm_asr_nano;
 pub mod glm_ocr;
+#[cfg(feature = "gpt-sovits")]
+pub mod gpt_sovits;
 pub mod hunyuan_ocr;
 pub mod index_tts;
 #[cfg(feature = "sherpa")]
@@ -112,6 +114,8 @@ pub enum ModelInstance<'a> {
     Laya(crate::models::laya::LayaRouteModel),
     #[cfg(feature = "vla")]
     Vla(crate::models::turbovla::TurboVlaModel),
+    #[cfg(feature = "gpt-sovits")]
+    GptSovits(crate::models::gpt_sovits::GptSovitsModel),
 }
 
 impl<'a> GenerateModel for ModelInstance<'a> {
@@ -156,6 +160,10 @@ impl<'a> GenerateModel for ModelInstance<'a> {
             #[cfg(feature = "vla")]
             ModelInstance::Vla(_) => Err(anyhow!(
                 "vla is an action model; use POST /v1/actions instead of chat completions"
+            )),
+            #[cfg(feature = "gpt-sovits")]
+            ModelInstance::GptSovits(_) => Err(anyhow!(
+                "gpt-sovits is a tts model; use POST /v1/tts instead of chat completions"
             )),
         }
     }
@@ -211,6 +219,10 @@ impl<'a> GenerateModel for ModelInstance<'a> {
             ModelInstance::Vla(_) => Err(anyhow!(
                 "vla is an action model; use POST /v1/actions instead of chat completions"
             )),
+            #[cfg(feature = "gpt-sovits")]
+            ModelInstance::GptSovits(_) => Err(anyhow!(
+                "gpt-sovits is a tts model; use POST /v1/tts instead of streaming chat completions"
+            )),
         }
     }
 }
@@ -239,6 +251,15 @@ impl<'a> ModelInstance<'a> {
     pub fn asr_model(&self) -> Option<&crate::models::sense_voice::SenseVoiceModel> {
         match self {
             ModelInstance::SenseVoice(model) => Some(model),
+            _ => None,
+        }
+    }
+
+    /// 取 GPT-SoVITS（只有加载了 gpt-sovits 时才有）。`/v1/tts` 端点用它。
+    #[cfg(feature = "gpt-sovits")]
+    pub fn gpt_sovits_model(&self) -> Option<&crate::models::gpt_sovits::GptSovitsModel> {
+        match self {
+            ModelInstance::GptSovits(model) => Some(model),
             _ => None,
         }
     }
@@ -414,6 +435,11 @@ pub fn load_model<'a>(
                 0,
             )?;
             ModelInstance::Laya(model)
+        }
+        #[cfg(feature = "gpt-sovits")]
+        WhichModel::GptSovits => {
+            let model = crate::models::gpt_sovits::GptSovitsModel::init(path, device, dtype)?;
+            ModelInstance::GptSovits(model)
         }
         #[cfg(feature = "vla")]
         WhichModel::TurboVla => {
