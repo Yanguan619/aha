@@ -149,6 +149,27 @@ impl Qwen3Model {
         inputs_embeds: Option<&Tensor>,
         seqlen_offset: usize,
     ) -> Result<Tensor> {
+        let hidden_states = self.forward_hidden_impl(input_ids, inputs_embeds, seqlen_offset)?;
+        let seq_len = hidden_states.dim(1)?;
+        Ok(hidden_states.narrow(1, seq_len - 1, 1)?)
+    }
+
+    /// 和 `forward_hidden` 一样，但返回**所有**位置的 hidden state（IndexTTS 的情绪编码要用整段）
+    pub fn forward_hidden_full(
+        &mut self,
+        input_ids: Option<&Tensor>,
+        inputs_embeds: Option<&Tensor>,
+        seqlen_offset: usize,
+    ) -> Result<Tensor> {
+        self.forward_hidden_impl(input_ids, inputs_embeds, seqlen_offset)
+    }
+
+    fn forward_hidden_impl(
+        &mut self,
+        input_ids: Option<&Tensor>,
+        inputs_embeds: Option<&Tensor>,
+        seqlen_offset: usize,
+    ) -> Result<Tensor> {
         if input_ids.is_none() && inputs_embeds.is_none() {
             return Err(anyhow::anyhow!(
                 "You must specify exactly one of input_ids or inputs_embeds"
@@ -183,9 +204,7 @@ impl Qwen3Model {
             hidden_states =
                 decode_layer.forward(&hidden_states, &cos, &sin, attention_mask.as_ref())?;
         }
-        hidden_states = self.norm.forward(&hidden_states)?;
-        let hidden_state = hidden_states.narrow(1, seq_len - 1, 1)?;
-        Ok(hidden_state)
+        Ok(self.norm.forward(&hidden_states)?)
     }
 
     pub fn embedding_token_id(&self, input_ids: &Tensor) -> Result<Tensor> {

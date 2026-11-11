@@ -43,7 +43,9 @@ impl UpSample1d {
     pub fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let c = xs.dim(1)?;
         let xs = pad_replicate_last_dim(xs, (self.pad, self.pad))?;
+        // 上游是 `self.ratio * conv_transpose1d(...)`，这个 ×ratio 很容易漏
         let xs = xs.conv_transpose1d(&self.filter.repeat((c, 1, 1))?, 0, 0, self.stride, 1, c)?;
+        let xs = (xs * self.stride as f64)?;
         let xs_last_dim = xs.dim(D::Minus1)?;
         let xs_len = xs_last_dim - self.pad_left - self.pad_right;
         let xs = xs.narrow(D::Minus1, self.pad_left, xs_len)?;

@@ -3,6 +3,8 @@ use candle_core::Tensor;
 pub mod embedding;
 pub mod generate;
 pub mod gguf;
+pub mod gguf_lenient;
+pub mod gguf_var_builder;
 pub mod model_mapping;
 pub mod modules;
 pub mod reranker;

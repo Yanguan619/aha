@@ -342,6 +342,20 @@ impl RepCodec {
         })
     }
 
+    /// 直接由码本索引解码出语义特征：(b, T) -> (b, 2T, hidden)
+    pub fn decode_codes(&self, codes: &Tensor) -> Result<Tensor> {
+        let quantized = self.quantizer.vq2emb(codes)?; // (b, hidden, T) 已经是通道在前
+        let xs = self.decoder_0.forward(&quantized)?; // (b, T, 384)
+        let xs = self.decoder_1.forward(&xs)?; // (b, T, hidden)
+        let mut xs = xs.transpose(1, 2)?.contiguous()?; // (b, hidden, T)
+        if let Some(up) = &self.up {
+            let last_dim = xs.dim(D::Minus1)?;
+            xs = interpolate_nearest_1d(&xs, last_dim * 2)?;
+            xs = up.forward(&xs)?.transpose(1, 2)?.contiguous()?;
+        }
+        Ok(xs)
+    }
+
     pub fn forward(&self, xs: &Tensor) -> Result<(Tensor, Tensor)> {
         let mut xs = xs.clone();
         if let Some(down) = &self.down {
@@ -354,6 +368,9 @@ impl RepCodec {
         xs = xs.transpose(1, 2)?;
         let (quantized_out, all_indices, _) = self.quantizer.forward(&xs, None)?;
         xs = self.decoder_0.forward(&quantized_out)?;
+        // decoder 是对称的：vocos backbone(384) -> linear 回 hidden_size(1024)，
+        // 之前漏了 decoder_1，会在 up 卷积处报通道数不匹配
+        xs = self.decoder_1.forward(&xs)?;
         if let Some(up) = &self.up {
             xs = xs.transpose(1, 2)?;
             let last_dim = xs.dim(D::Minus1)?;

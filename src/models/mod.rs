@@ -8,6 +8,7 @@ pub mod fun_asr_nano;
 pub mod glm_asr_nano;
 pub mod glm_ocr;
 pub mod hunyuan_ocr;
+pub mod index_tts;
 #[cfg(feature = "sherpa")]
 pub mod kokoro;
 #[cfg(feature = "laya")]

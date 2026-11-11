@@ -77,6 +77,16 @@ impl<R: Read + Seek> Gguf<R> {
         &self.ct.metadata
     }
 
+    /// GGUF 里是否存在这个名字的张量
+    pub fn contains(&self, name: &str) -> bool {
+        self.ct.tensor_infos.contains_key(name)
+    }
+
+    /// 所有张量名（含别名）
+    pub fn tensor_names(&self) -> impl Iterator<Item = &String> {
+        self.ct.tensor_infos.keys()
+    }
+
     pub fn tensor(&mut self, name: &str) -> Result<QTensor> {
         Ok(self.ct.tensor(&mut self.reader, name, &self.device)?)
     }
