@@ -110,6 +110,26 @@ cargo build --release --features sherpa
 > Models for these two backends are **not** hosted on ModelScope — pass a local
 > directory with `--weight-path`.
 
+**Android (aarch64)**
+
+Cross-compiling to `aarch64-linux-android` needs an NDK (r26) and `ninja`; the script
+resolves the NDK, fixes up CMake (Ninja + CMake's own Android support) and the
+`+fp16` flag candle needs:
+
+```bash
+pwsh scripts/build-android.ps1 -Release        # -> target/aarch64-linux-android/release/aha
+```
+
+The result is arm64-v8a, API 26+, and assumes FP16 arithmetic (ARMv8.2+, i.e. phones
+from ~2018 on). Ship `libc++_shared.so` alongside it.
+
+With `-Features sherpa` the build also links `libsherpa-onnx-c-api.so`, so the binary
+needs `libsherpa-onnx-c-api.so` + `libonnxruntime.so` next to it on the device. That
+crate downloads its prebuilt libs from GitHub at build time; if GitHub is unreachable,
+fetch `sherpa-onnx-v<ver>-android.tar.bz2` by hand and set `SHERPA_ONNX_ARCHIVE_DIR`.
+Set `HOME` and `AHA_HOME` to a writable directory before running: Android's `home_dir()`
+is `/`, so the default `~/.aha` is not writable.
+
 ### CLI Quick Reference
 
 ```bash

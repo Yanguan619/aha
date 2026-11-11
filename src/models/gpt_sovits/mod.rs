@@ -10,6 +10,8 @@
 //!   v2Pro 的 `eres2net` 说话人模型未实现（可用零向量跑通链路）
 //! - [ ] P5 服务接入
 
+#[cfg(feature = "cuda")]
+pub mod ar_graph;
 pub mod eres2net;
 pub mod flow;
 pub mod hifigan;

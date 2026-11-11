@@ -1,4 +1,5 @@
 pub mod audio_utils;
+pub mod http;
 
 /// 解析 `--device`：`auto`（None，由模型自己决定）/ `cpu` / `cuda`。
 pub fn resolve_device(spec: &str) -> anyhow::Result<Option<candle_core::Device>> {
@@ -25,7 +26,7 @@ pub mod tensor_utils;
 pub mod video_utils;
 
 use std::fs::File;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{collections::HashMap, fs, path::PathBuf, process::Command, time::Duration};
 
@@ -41,8 +42,8 @@ use candle_core::{
 };
 use candle_nn::VarBuilder;
 use dirs::home_dir;
+use futures_util::StreamExt;
 use half::{bf16, f16, slice::HalfFloatSliceExt};
-use modelscope::ModelScope;
 use tokio::time::sleep;
 use zip::ZipArchive;
 
@@ -504,13 +505,16 @@ pub fn extract_user_text_vec(mes: &ChatCompletionParameters) -> Result<Vec<Strin
 }
 
 pub fn get_default_save_dir() -> Option<String> {
-    home_dir().map(|mut path| {
-        path.push(".aha");
-        if let Err(e) = fs::create_dir_all(&path) {
-            eprintln!("Failed to create directory {:?}: {}", path, e);
+    // 宿主进程（桌宠）用 AHA_HOME 指定：Android 上没有 HOME，~/.aha 不可写；
+    // 桌面上不设这个变量，仍然落在 ~/.aha。
+    let dir = match std::env::var_os("AHA_HOME").filter(|v| !v.is_empty()) {
+        Some(v) => PathBuf::from(v),
+        None => home_dir()?.join(".aha"),
+    };
+    if let Err(e) = fs::create_dir_all(&dir) {
+        eprintln!("Failed to create directory {:?}: {}", dir, e);
         }
-        path.to_string_lossy().to_string()
-    })
+    Some(dir.to_string_lossy().to_string())
 }
 
 pub async fn download_model(
@@ -526,7 +530,7 @@ pub async fn download_model(
             attempts, max_retries
         );
 
-        match ModelScope::download(model_id, save_dir).await {
+        match download_repo(model_id, save_dir).await {
             Ok(()) => {
                 println!("Model downloaded successfully");
                 return Ok(());
@@ -548,6 +552,109 @@ pub async fn download_model(
             }
         }
     }
+}
+
+/// ModelScope 上模型的文件列表；字段名是接口原始的大写驼峰。
+#[derive(serde::Deserialize)]
+struct RepoFilesResponse {
+    #[serde(rename = "Success")]
+    success: bool,
+    #[serde(rename = "Message")]
+    message: String,
+    #[serde(rename = "Data")]
+    data: Option<RepoFilesData>,
+}
+
+#[derive(serde::Deserialize)]
+struct RepoFilesData {
+    #[serde(rename = "Files")]
+    files: Vec<RepoFile>,
+}
+
+#[derive(serde::Deserialize)]
+struct RepoFile {
+    #[serde(rename = "Path")]
+    path: String,
+    #[serde(rename = "Size")]
+    size: u64,
+    #[serde(rename = "Type")]
+    kind: String,
+}
+
+const MS_API: &str = "https://modelscope.cn/api/v1/models";
+const MS_RESOLVE: &str = "https://modelscope.cn/models";
+const MS_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                     (KHTML, like Gecko) Chrome/89.0.4389.90 Safari/537.36";
+
+/// 把一个模型仓库的文件全量下到 `save_dir/<model_id>`（已存在且大小一致的跳过）。
+///
+/// 自己写而不用 `modelscope` crate：它的 reqwest 走平台证书校验，Android 上直接 panic，
+/// 见 [`http`]。顺手也去掉了那个依赖。
+async fn download_repo(model_id: &str, save_dir: &str) -> Result<()> {
+    let dir = PathBuf::from(save_dir).join(model_id);
+    fs::create_dir_all(&dir)?;
+    println!("\nDownloading model {model_id} to: {}\n", dir.display());
+
+    let client = http::client()?;
+    let resp = client
+        .get(format!("{MS_API}/{model_id}/repo/files?Recursive=true"))
+        .header("User-Agent", MS_UA)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        anyhow::bail!(
+            "Failed to list files of {model_id}: HTTP {}（模型 id 写错了，或者需要登录）",
+            resp.status()
+        );
+    }
+    let body: RepoFilesResponse = resp.json().await?;
+    if !body.success {
+        anyhow::bail!("Failed to list files of {model_id}: {}", body.message);
+    }
+    let files = body
+        .data
+        .ok_or_else(|| anyhow!("Failed to list files of {model_id}: empty response"))?
+        .files;
+    let blobs: Vec<RepoFile> = files.into_iter().filter(|f| f.kind == "blob").collect();
+    if blobs.is_empty() {
+        anyhow::bail!("{model_id} 的文件列表是空的");
+    }
+
+    for file in &blobs {
+        let dst = dir.join(&file.path);
+        if fs::metadata(&dst).map(|m| m.len() == file.size).unwrap_or(false) {
+            continue;
+        }
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        download_file(&client, model_id, file, &dst).await?;
+        println!("  {} ({:.1} MB)", file.path, file.size as f64 / 1_048_576.0);
+    }
+    Ok(())
+}
+
+async fn download_file(
+    client: &reqwest::Client,
+    model_id: &str,
+    file: &RepoFile,
+    dst: &std::path::Path,
+) -> Result<()> {
+    // shortcut: 单个文件不支持断点续传（整个文件重下）；已完成的文件按大小跳过，
+    // 只在网络很差的大 shard 上才会浪费带宽。
+    let url = format!("{MS_RESOLVE}/{model_id}/resolve/master/{}", file.path);
+    let resp = client.get(&url).header("User-Agent", MS_UA).send().await?;
+    if !resp.status().is_success() {
+        anyhow::bail!("Failed to download {}: HTTP {}", file.path, resp.status());
+    }
+
+    let mut out = File::create(dst)?;
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        out.write_all(&chunk?)?;
+    }
+    out.flush()?;
+    Ok(())
 }
 
 pub fn get_file_path(file: &str) -> Result<PathBuf> {

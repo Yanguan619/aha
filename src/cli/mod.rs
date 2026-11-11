@@ -239,6 +239,7 @@ pub(crate) async fn run_multi(args: MultiArgs) -> anyhow::Result<()> {
     let MultiArgs {
         asr,
         tts,
+        tts_model,
         laya,
         laya_path,
         vla,
@@ -248,6 +249,13 @@ pub(crate) async fn run_multi(args: MultiArgs) -> anyhow::Result<()> {
     } = args;
 
     let mut specs: Vec<ModelSpec> = Vec::new();
+    // tts 角色用哪个模型：默认 Kokoro（sherpa）；传 gpt-sovits-v2pro-zh 时换成
+    // 本地转换的 GPT-SoVITS（--tts 指向转换后的目录，不走 sherpa、不下载）。
+    #[cfg(feature = "sherpa")]
+    let tts_model = tts_model.unwrap_or(WhichModel::Kokoro);
+    #[cfg(not(feature = "sherpa"))]
+    let tts_model =
+        tts_model.ok_or_else(|| anyhow!("这个二进制没编 sherpa 特性，--tts 必须配 --tts-model"))?;
 
     #[cfg(feature = "sherpa")]
     {
@@ -256,15 +264,23 @@ pub(crate) async fn run_multi(args: MultiArgs) -> anyhow::Result<()> {
             aha::models::common::sherpa::ensure_downloaded(dir, WhichModel::SenseVoice)?;
             specs.push(ModelSpec::new("asr", WhichModel::SenseVoice, dir));
         }
-        if let Some(dir) = tts.as_deref() {
+        if let Some(dir) = tts.as_deref()
+            && tts_model.is_sherpa_model()
+        {
             tracing::info!(dir = %dir, role = "tts", "检查 sherpa 模型文件");
-            aha::models::common::sherpa::ensure_downloaded(dir, WhichModel::Kokoro)?;
-            specs.push(ModelSpec::new("tts", WhichModel::Kokoro, dir));
+            aha::models::common::sherpa::ensure_downloaded(dir, tts_model)?;
+        }
+        if let Some(dir) = tts.as_deref() {
+            specs.push(ModelSpec::new("tts", tts_model, dir));
         }
     }
     #[cfg(not(feature = "sherpa"))]
-    if asr.is_some() || tts.is_some() {
-        return Err(anyhow!("这个二进制没编 sherpa 特性，不能启用 asr/tts 角色"));
+    if let Some(dir) = tts.as_deref() {
+        specs.push(ModelSpec::new("tts", tts_model, dir));
+    }
+    #[cfg(not(feature = "sherpa"))]
+    if asr.is_some() {
+        return Err(anyhow!("这个二进制没编 sherpa 特性，不能启用 asr 角色"));
     }
 
     #[cfg(feature = "laya")]
@@ -419,6 +435,7 @@ pub(crate) fn run_run(args: RunArgs) -> anyhow::Result<()> {
         model,
         input,
         output,
+        pet,
         path_common,
     } = args;
 
@@ -520,7 +537,7 @@ pub(crate) fn run_run(args: RunArgs) -> anyhow::Result<()> {
                 &input,
                 output.as_deref(),
                 &weight_path,
-                &path_common.device,
+                &pet.device,
             )?;
         }
         #[cfg(feature = "laya")]

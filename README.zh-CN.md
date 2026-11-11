@@ -107,6 +107,29 @@ cargo build --release --features sherpa
 > `onnxruntime.dll` 和 `sherpa-onnx-*.dll`（构建脚本会自动拷到 `target/<profile>/`）。
 > 这两个后端的模型**没有托管在 ModelScope**，请用 `--weight-path` 指向本地目录。
 
+**Android（aarch64）**
+
+交叉编译到 `aarch64-linux-android` 需要 NDK（r26）和 `ninja`；脚本会自动找 NDK、配好
+CMake（Ninja + CMake 自带的 Android 支持）以及 candle 需要的 `+fp16`：
+
+```bash
+pwsh scripts/build-android.ps1 -Release        # -> target/aarch64-linux-android/release/aha
+```
+
+产物是 arm64-v8a、API 26+，并要求设备支持 FP16 算术（ARMv8.2+，约 2018 年后的机器）。
+分发时把 NDK 里的 `libc++_shared.so` 一起带上。
+
+加 `-Features sherpa` 时还会链接 `libsherpa-onnx-c-api.so`，设备上需要
+`libsherpa-onnx-c-api.so` + `libonnxruntime.so` 与二进制同目录（`LD_LIBRARY_PATH` 指过去）。
+该 crate 构建期从 GitHub 下预编译库；GitHub 不通时先手动下
+`sherpa-onnx-v<版本>-android.tar.bz2` 并用 `SHERPA_ONNX_ARCHIVE_DIR` 指向它。
+
+**Android 运行时注意**：`home_dir()` 在 Android 上返回 `/`，运行前必须把 `HOME` 和 `AHA_HOME`
+设到可写目录，否则模型目录会落到不可写的 `/.aha`。HTTPS 下载走的是
+[`src/utils/http.rs`](src/utils/http.rs) 里自带 `webpki-roots` 的 rustls 配置（不用
+reqwest 默认的平台证书校验，那套在 Android 上要 JVM context），所以 `aha download`
+在设备上可以直接用。
+
 ### CLI 快速参考
 
 ```bash

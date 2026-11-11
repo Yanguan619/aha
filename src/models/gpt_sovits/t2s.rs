@@ -21,6 +21,8 @@
 //! 每层是 post-norm：`x = LN1(x + attn); x = LN2(x + mlp(x))`，MLP 用 ReLU。
 
 use std::path::Path;
+#[cfg(feature = "cuda")]
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use candle_core::{DType, Device, Module, Tensor};
@@ -28,6 +30,10 @@ use candle_nn::{Embedding, Linear, VarBuilder, embedding, linear, linear_no_bias
 use serde::Deserialize;
 
 use crate::models::common::sample::simple_sample;
+#[cfg(feature = "cuda")]
+use crate::models::common::cuda_graph::StaticTensor;
+#[cfg(feature = "cuda")]
+use crate::models::gpt_sovits::ar_graph::ArGraph;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct T2SModelConfig {
@@ -154,12 +160,9 @@ impl Block {
     }
 
     fn layer_norm(&self, x: &Tensor, w: &Tensor, b: &Tensor) -> Result<Tensor> {
-        let mean = x.mean_keepdim(candle_core::D::Minus1)?;
-        let centered = x.broadcast_sub(&mean)?;
-        let var = centered.sqr()?.mean_keepdim(candle_core::D::Minus1)?;
-        let norm = (var + self.eps)?.sqrt()?.recip()?;
-        let out = centered.broadcast_mul(&norm)?;
-        Ok(out.broadcast_mul(w)?.broadcast_add(b)?)
+        // 融合版（torch 的 F.layer_norm 也是一个 kernel）；手写 10 个算子的小
+        // kernel 在 GPU 上每个都要等一次调度，24 层 × 2 次会明显拖慢。
+        Ok(candle_nn::ops::layer_norm(x, w, b, self.eps as f32)?)
     }
 
     /// `cache = None` 时处理整段（prompt 阶段）；`Some((k, v))` 时增量解码一个 token。
@@ -209,6 +212,60 @@ impl Block {
         let x = self.layer_norm(&(&x + mlp)?, &self.n2w, &self.n2b)?;
         Ok((x, k_cache, v_cache))
     }
+
+    /// 抓进 CUDA graph 的那一步：kv 定长、原地写当前位，注意力对整段 `max_seq` 算。
+    ///
+    /// `k_cache` 是 `(1, heads, d, max_seq)`、`v_cache` 是 `(1, heads, max_seq, d)`；
+    /// `pos_k` / `pos_v` 是对应形状的索引张量（值都是当前位），等价官方的
+    /// `k_cache.index_copy_(2, input_pos, k)`。`mask` 是 `(1, 1, 1, max_seq)` 的加性掩码。
+    fn forward_static(
+        &self,
+        x: &Tensor,
+        pos_k: &Tensor,
+        pos_v: &Tensor,
+        mask: &Tensor,
+        k_cache: &Tensor,
+        v_cache: &Tensor,
+    ) -> Result<Tensor> {
+        let (b, t, hidden) = x.dims3()?;
+        let flat = x.reshape((b * t, hidden))?;
+        let qkv = flat.matmul(&self.qkv_w.t()?)?.broadcast_add(&self.qkv_b)?;
+        let qkv = qkv.reshape((b, t, hidden * 3))?;
+        let q = qkv
+            .narrow(2, 0, hidden)?
+            .reshape((b, t, self.heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let k = qkv
+            .narrow(2, hidden, hidden)?
+            .reshape((b, t, self.heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let v = qkv
+            .narrow(2, hidden * 2, hidden)?
+            .reshape((b, t, self.heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+
+        // 原地写进定长 kv（torch 的 index_copy_ 等价写法）
+        k_cache.scatter_set(pos_k, &k.transpose(2, 3)?.contiguous()?, 3)?;
+        v_cache.scatter_set(pos_v, &v, 2)?;
+
+        let mut scores = q.matmul(k_cache)?;
+        scores = (scores / (self.head_dim as f64).sqrt())?;
+        scores = scores.broadcast_add(mask)?;
+        let probs = candle_nn::ops::softmax_last_dim(&scores)?;
+        let attn = probs.matmul(v_cache)?;
+        let attn = attn
+            .transpose(1, 2)?
+            .contiguous()?
+            .reshape((b, t, hidden))?;
+        let attn = self.out.forward(&attn)?;
+
+        let x = self.layer_norm(&(x + attn)?, &self.n1w, &self.n1b)?;
+        let mlp = self.f2.forward(&self.f1.forward(&x)?.relu()?)?;
+        self.layer_norm(&(&x + mlp)?, &self.n2w, &self.n2b)
+    }
 }
 
 pub struct Text2Semantic {
@@ -221,9 +278,22 @@ pub struct Text2Semantic {
     predict: Linear,
     device: Device,
     pub cfg: T2SModelConfig,
+    /// 按句长分桶缓存已捕获的图（capture 一次 ~100ms，不能每句重抓）
+    #[cfg(feature = "cuda")]
+    graphs: Mutex<GraphCache>,
+}
+
+#[cfg(feature = "cuda")]
+struct GraphCache {
+    graphs: Vec<Arc<Mutex<ArGraph>>>,
+    /// 这台机器抓不成（老驱动/显存不够）：记下来，别再每句重试
+    failed: bool,
 }
 
 impl Text2Semantic {
+    /// 图容量分桶。官方统一用 1024（短句被 padding 拖慢），这里按句长取最小桶。
+    const BUCKETS: [usize; 4] = [256, 512, 1024, 1536];
+
     pub fn load(dir: impl AsRef<Path>, device: &Device, dtype: DType) -> Result<Self> {
         let dir = dir.as_ref();
         let cfg = T2SModelConfig::load(dir)?;
@@ -254,6 +324,11 @@ impl Text2Semantic {
             predict: linear_no_bias(cfg.hidden_dim, cfg.vocab_size, vb.pp("ar_predict_layer"))?,
             device: device.clone(),
             cfg,
+            #[cfg(feature = "cuda")]
+            graphs: Mutex::new(GraphCache {
+                graphs: Vec::new(),
+                failed: false,
+            }),
         };
         Ok(model)
     }
@@ -360,6 +435,21 @@ impl Text2Semantic {
             caches[i] = Some((k, v));
         }
 
+        // 官方 `Accel` 的 static cuda graph 后端：预填还用 eager，之后每一步抓进图里重放
+        #[cfg(feature = "cuda")]
+        {
+            let need = x_len
+                + y_len
+                + opts
+                    .early_stop_num
+                    .unwrap_or(opts.max_new_tokens)
+                    .min(opts.max_new_tokens);
+            if let Some(graph) = self.graph_for(need)? {
+                let caches: Vec<(Tensor, Tensor)> = caches.into_iter().flatten().collect();
+                return self.decode_graph(&graph, hidden, &caches, prompt_codes, opts);
+            }
+        }
+
         let mut y: Vec<u32> = prompt_codes.to_vec();
         let mut last = hidden.narrow(1, hidden.dim(1)? - 1, 1)?; // (1, 1, H)
         let mut generated = Vec::new();
@@ -425,8 +515,172 @@ impl Text2Semantic {
         Ok(generated)
     }
 
-    fn build_prompt_mask(&self, x_len: usize, y_len: usize) -> Result<Tensor> {
-        let total = x_len + y_len;
+    /// 挑出这一 token：屏蔽前 11 步的 EOS、采样、判停。两条路径共用同一套逻辑。
+    fn pick_token(
+        &self,
+        logits: &Tensor,
+        idx: usize,
+        y: &[u32],
+        opts: &GenOptions,
+    ) -> Result<(u32, bool)> {
+        // 前 11 步屏蔽 EOS（对应 Python 的 `logits = logits[:, :-1]`）
+        let candidates = if idx < 11 && self.cfg.eos + 1 == logits.dim(0)? {
+            logits.narrow(0, 0, self.cfg.eos)?
+        } else {
+            logits.clone()
+        };
+        let sampled = if opts.greedy {
+            candidates.argmax(0)?.to_scalar::<u32>()?
+        } else {
+            simple_sample(
+                &candidates,
+                true,
+                Some(opts.temperature as f64),
+                Some(opts.top_k),
+                Some(opts.top_p),
+                Some(y),
+                opts.repetition_penalty,
+            )?
+        };
+        let argmax = candidates.argmax(0)?.to_scalar::<u32>()?;
+        Ok((
+            sampled,
+            argmax as usize == self.cfg.eos || sampled as usize == self.cfg.eos,
+        ))
+    }
+
+    /// 已捕获的图数量（调试/自检用）。
+    #[cfg(feature = "cuda")]
+    pub fn graph_count(&self) -> usize {
+        self.graphs.lock().unwrap().graphs.len()
+    }
+
+    #[cfg(feature = "cuda")]
+    /// 拿一张容量够用的图（按句长分桶，官方是所有请求都按 max_seq_length padding）。
+    fn graph_for(&self, need: usize) -> Result<Option<Arc<Mutex<ArGraph>>>> {
+        if !self.device.is_cuda() || self.alpha_text.dtype() != DType::F32 {
+            return Ok(None);
+        }
+        if std::env::var("AHA_GSV_GRAPH").is_ok_and(|v| v == "0") {
+            return Ok(None);
+        }
+        let Some(max_seq) = Self::BUCKETS.iter().copied().find(|b| *b >= need) else {
+            return Ok(None); // 超长句退回 eager
+        };
+        let mut cache = self.graphs.lock().unwrap();
+        if cache.failed {
+            return Ok(None);
+        }
+        if let Some(g) = cache.graphs.iter().find(|g| g.lock().unwrap().max_seq == max_seq) {
+            return Ok(Some(g.clone()));
+        }
+        let heads = self.cfg.head;
+        let head_dim = self.cfg.hidden_dim / self.cfg.head;
+        let graph = match ArGraph::capture(
+            &self.device,
+            self.cfg.n_layer,
+            heads,
+            head_dim,
+            max_seq,
+            |x, pos, arange, k, v| self.step_static(x, pos, arange, k, v),
+        ) {
+            Ok(g) => Arc::new(Mutex::new(g)),
+            Err(e) => {
+                tracing::warn!("AR CUDA graph 捕获失败，退回 eager：{e:#}");
+                cache.failed = true;
+                return Ok(None);
+            }
+        };
+        if cache.graphs.len() >= 3 {
+            cache.graphs.remove(0); // 只保留最近三个桶，省显存
+        }
+        cache.graphs.push(graph.clone());
+        Ok(Some(graph))
+    }
+
+    /// 图里跑的那一步：mask / 索引都在图内由 `pos` 生成。
+    ///
+    /// 参数全是 `&StaticTensor` —— 类型层面就说明了"这段只在图缓冲上跑"：图把地址烧死了，
+    /// 随手 `Tensor::zeros` 出来的新张量在这里是编译错误。图外的东西（embedding、head、
+    /// 采样、判停）都是普通 `Tensor`，碰不到这个签名。
+    #[cfg(feature = "cuda")]
+    fn step_static(
+        &self,
+        x: &StaticTensor,
+        pos: &StaticTensor,
+        arange: &StaticTensor,
+        k: &[StaticTensor],
+        v: &[StaticTensor],
+    ) -> Result<Tensor> {
+        let (x, pos, arange) = (x.tensor(), pos.tensor(), arange.tensor());
+        let max_seq = arange.dim(0)?;
+        let heads = self.cfg.head;
+        let head_dim = self.cfg.hidden_dim / self.cfg.head;
+        // 本步新写的 kv 在 pos 这一格，注意力要能看到它 → 屏蔽 > pos 的位置
+        let blocked = arange
+            .gt(&pos.broadcast_as(max_seq)?)?
+            .to_dtype(DType::F32)?
+            .affine(-1e9, 0.0)?
+            .reshape((1, 1, 1, max_seq))?;
+        let pos_v = pos.broadcast_as((1, heads, 1, head_dim))?.contiguous()?;
+        let pos_k = pos.broadcast_as((1, heads, head_dim, 1))?.contiguous()?;
+        let mut hidden = x.clone();
+        for (i, block) in self.blocks.iter().enumerate() {
+            hidden = block.forward_static(
+                &hidden,
+                &pos_k,
+                &pos_v,
+                &blocked,
+                k[i].tensor(),
+                v[i].tensor(),
+            )?;
+        }
+        Ok(hidden)
+    }
+
+    /// 图的解码循环：预填的 kv 先灌进定长缓冲，之后每步只重放。
+    #[cfg(feature = "cuda")]
+    fn decode_graph(
+        &self,
+        graph: &Mutex<ArGraph>,
+        hidden: Tensor,
+        caches: &[(Tensor, Tensor)],
+        prompt_codes: &[u32],
+        opts: &GenOptions,
+    ) -> Result<Vec<u32>> {
+        let y_len = prompt_codes.len();
+        let prefill_len = hidden.dim(1)?; // x_len + y_len
+        let graph = graph.lock().unwrap();
+        graph.seed(caches, prefill_len)?;
+
+        let mut y: Vec<u32> = prompt_codes.to_vec();
+        let mut generated = Vec::new();
+        let mut last = hidden.narrow(1, prefill_len - 1, 1)?; // (1, 1, H)
+        for idx in 0..opts.max_new_tokens {
+            let logits = self.predict.forward(&last.squeeze(1)?)?.squeeze(0)?;
+            let (sampled, stop_by_eos) = self.pick_token(&logits, idx, &y, opts)?;
+            let stopped = stop_by_eos
+                || opts
+                    .early_stop_num
+                    .is_some_and(|n| generated.len() + 1 > n)
+                || idx + 1 >= opts.max_new_tokens;
+            if !stop_by_eos {
+                y.push(sampled);
+                generated.push(sampled);
+            }
+            if stopped {
+                break;
+            }
+            // 位置编码按音频序列算（和 eager 路径同一个下标），kv 写的是绝对位置
+            let next_ids = Tensor::from_vec(vec![sampled], (1, 1), &self.device)?;
+            let emb = self.audio_emb.forward(&next_ids)?;
+            let xy = self.add_pe(&emb, &self.alpha_audio, y_len + idx)?;
+            last = graph.step(&xy, prefill_len + idx)?;
+        }
+        Ok(generated)
+    }
+
+    fn build_prompt_mask(&self, x_len: usize, y_len: usize) -> Result<Tensor> {        let total = x_len + y_len;
         let mut values = vec![0f32; total * total];
         for r in 0..total {
             for c in 0..total {

@@ -226,18 +226,24 @@ fn hf_base() -> String {
 }
 
 fn client() -> Result<reqwest::blocking::Client> {
-    reqwest::blocking::Client::builder()
-        // 30 分钟是"整条请求"的上限：model.onnx（325MB）能在 180KB/s 的线下完
-        .timeout(std::time::Duration::from_secs(1800))
-        .connect_timeout(std::time::Duration::from_secs(30))
-        .build()
-        .context("建不了 HTTP 客户端")
+    // 和 `aha download` 共用一套根证书配置，Android 上才不会 panic。
+    crate::utils::http::blocking_client()
 }
 
 fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(suffix);
     path.with_file_name(name)
+}
+
+/// ONNX Runtime 的 execution provider（默认 `cpu`，交给 sherpa 自己兜底）。
+///
+/// 只影响 ASR/TTS 这类 sherpa 模型，取值跟 sherpa-onnx 一致：
+/// `cpu` / `cuda` / `coreml` / `trt` / `rknn` / `qnn` / `openvino` / `nnapi`。
+/// Android 上试 NPU 就 `AHA_PROVIDER=nnapi`：NNAPI 要 API 27+，预编译 .so 的编译期
+/// API level 不够时 sherpa 会打印 "Fallback to cpu" 然后照常跑。
+pub fn onnx_provider() -> Option<String> {
+    std::env::var("AHA_PROVIDER").ok().filter(|v| !v.is_empty())
 }
 
 #[cfg(test)]

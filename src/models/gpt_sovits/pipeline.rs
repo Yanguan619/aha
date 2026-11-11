@@ -36,6 +36,11 @@ use super::wordpiece::WordPieceTokenizer;
 pub struct VoiceConfig {
     /// 参考音频（相对路径基于模型目录）
     pub ref_audio: String,
+    /// 参考音频里说的原话。**给了才走"提示音色"模式**（AR 的 x = 参考文本 + 目标文本，
+    /// y = 参考音 codes），和官方 `prompt_text` 一致；不给就是 ref-free（官方也一样，
+    /// 见 TTS.py 的 `no_prompt_text -> prompt=None`）。
+    #[serde(default)]
+    pub ref_text: Option<String>,
     #[serde(default)]
     pub speed: Option<f32>,
 }
@@ -46,11 +51,22 @@ struct VoicesFile {
     voices: HashMap<String, VoiceConfig>,
 }
 
+/// 参考音频算出来的东西（同一次进程里复用）。
+struct RefFeat {
+    /// 参考音 → 语义 codes（AR 的 y）
+    prompt: Vec<u32>,
+    /// 音色向量（SoVITS 的 ge）
+    ge: Tensor,
+    /// 参考文本的 phones / BERT；空 = 没给 ref_text，走 ref-free
+    text_ids: Vec<u32>,
+    bert: Option<Tensor>,
+}
+
 pub struct GptSovitsModel {
     dir: PathBuf,
-    /// 参考音频特征缓存：`(prompt_codes, ge)`。参考音频不变就不用重算
+    /// 参考音频特征缓存。参考音频不变就不用重算
     /// （HuBERT + 谱 + ref_enc + eres2net 加起来要几百毫秒）。
-    ref_cache: std::sync::Mutex<Option<(Vec<u32>, Tensor)>>,
+    ref_cache: std::sync::Mutex<Option<RefFeat>>,
     frontend: ZhFrontend,
     hubert: Hubert,
     bert: RobertaEncoder,
@@ -139,20 +155,38 @@ impl GptSovitsModel {
             .get(&name)
             .ok_or_else(|| anyhow::anyhow!("voices.json 里没有音色 {name:?}"))?;
 
-        // 1) 参考音频 → prompt codes + ge
-        let (prompt, ge) = self.prepare_reference(&cfg.ref_audio)?;
+        // 1) 参考音频 → prompt codes + ge（+ 有 ref_text 时的参考文本特征）
+        let ref_feat = self.prepare_reference(cfg)?;
 
-        // 2) 文本前端
+        // 2) 目标文本前端
         let g2p = self.frontend.g2p(text)?;
         if g2p.phones.is_empty() {
             bail!("文本里没有可发音内容：{text:?}");
         }
         let text_ids = self.frontend.to_ids(&g2p.phones);
-
-        // 3) BERT 字级特征 → phone 级
         let bert_feat = self
             .bert
             .phone_level_feature(&g2p.norm_text, &self.tokenizer, &g2p.word2ph)?;
+
+        // 3) AR 的输入
+        //
+        // 官方 `TTS.py`：给了 `prompt_text` 时把**参考文本**的 phones/bert 接在目标文本
+        // 前面（`torch.cat([prompt_bert, bert], 1)` + `prompt_phones + phones`），
+        // 没给就把 prompt 置空跑 ref-free。少了这一段，AR 看到的是"目标文本 + 别人
+        // 的音色 codes"，会立刻吐 EOS（实测 0.4s 就收尾）。
+        let (ar_ids, ar_bert) = match &ref_feat.bert {
+            Some(ref_bert) => {
+                let mut ids = ref_feat.text_ids.clone();
+                ids.extend_from_slice(&text_ids);
+                (ids, Tensor::cat(&[ref_bert, &bert_feat], 1)?)
+            }
+            None => (text_ids.clone(), bert_feat),
+        };
+        let prompt: &[u32] = if ref_feat.bert.is_some() {
+            &ref_feat.prompt
+        } else {
+            &[]
+        };
 
         // 4) AR 出语义 codes
         //
@@ -160,43 +194,74 @@ impl GptSovitsModel {
         // 设一个上限：约每个 phone 12 帧、最少 48 帧，再兜一个 1500 的硬顶。
         let early_stop = (text_ids.len() * 12 + 48).clamp(48, 1500);
         let gen_opts = GenOptions {
-            greedy: false,
             seed: 42,
             early_stop_num: Some(early_stop),
             ..Default::default()
         };
-        let codes = self.t2s.infer(&text_ids, &bert_feat, &prompt, &gen_opts)?;
+        let codes = self.t2s.infer(&ar_ids, &ar_bert, prompt, &gen_opts)?;
         if codes.is_empty() {
             bail!("AR 没有生成任何语义 token（文本 {text:?}）");
         }
 
-        // 5) SoVITS 合成
+        // 5) SoVITS 合成（只吃目标文本的 phones）
         let synth = SynthOptions {
             speed: cfg.speed.unwrap_or(speed),
             ..Default::default()
         };
-        self.sovits.synthesize(&codes, &text_ids, &ge, &synth)
+        self.sovits.synthesize(&codes, &text_ids, &ref_feat.ge, &synth)
     }
 
-    /// 参考音频 → (prompt 语义 codes, 音色向量)。带缓存。
-    fn prepare_reference(&self, ref_audio: &str) -> Result<(Vec<u32>, Tensor)> {
-        if let Some((codes, ge)) = self.ref_cache.lock().unwrap().as_ref() {
-            return Ok((codes.clone(), ge.clone()));
+    /// 参考音频（+ 参考文本）→ prompt codes / ge / 参考文本特征。带缓存。
+    fn prepare_reference(&self, cfg: &VoiceConfig) -> Result<RefFeat> {
+        if let Some(cached) = self.ref_cache.lock().unwrap().as_ref() {
+            return Ok(RefFeat {
+                prompt: cached.prompt.clone(),
+                ge: cached.ge.clone(),
+                text_ids: cached.text_ids.clone(),
+                bert: cached.bert.clone(),
+            });
         }
-        let result = self.prepare_reference_uncached(ref_audio)?;
-        *self.ref_cache.lock().unwrap() = Some((result.0.clone(), result.1.clone()));
-        Ok(result)
+        let mut feat = self.prepare_reference_uncached(&cfg.ref_audio)?;
+        // 参考文本：官方 `prompt_text`。voices.json 没写时退到参考音旁边的同名 .txt
+        //（和 `tools/tts/sovits/ref/ref.wav` + `ref.txt` 一个约定）。
+        let ref_text = cfg.ref_text.clone().or_else(|| {
+            let mut txt = self.resolve_ref_path(&cfg.ref_audio);
+            txt.set_extension("txt");
+            std::fs::read_to_string(txt).ok()
+        });
+        if let Some(text) = ref_text.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+            let g2p = self.frontend.g2p(text)?;
+            feat.text_ids = self.frontend.to_ids(&g2p.phones);
+            feat.bert = Some(
+                self.bert
+                    .phone_level_feature(&g2p.norm_text, &self.tokenizer, &g2p.word2ph)?,
+            );
+            tracing::info!(
+                "参考文本 {} 个 phone，走提示音色模式（AR 的 x = 参考文本 + 目标文本）",
+                feat.text_ids.len()
+            );
+        }
+        *self.ref_cache.lock().unwrap() = Some(RefFeat {
+            prompt: feat.prompt.clone(),
+            ge: feat.ge.clone(),
+            text_ids: feat.text_ids.clone(),
+            bert: feat.bert.clone(),
+        });
+        Ok(feat)
     }
 
-    fn prepare_reference_uncached(&self, ref_audio: &str) -> Result<(Vec<u32>, Tensor)> {
-        let path = {
-            let p = PathBuf::from(ref_audio);
-            if p.is_absolute() {
-                p
-            } else {
-                self.dir.join(p)
-            }
-        };
+    /// 参考音频路径（相对路径按模型目录解析）。
+    fn resolve_ref_path(&self, ref_audio: &str) -> PathBuf {
+        let p = PathBuf::from(ref_audio);
+        if p.is_absolute() {
+            p
+        } else {
+            self.dir.join(p)
+        }
+    }
+
+    fn prepare_reference_uncached(&self, ref_audio: &str) -> Result<RefFeat> {
+        let path = self.resolve_ref_path(ref_audio);
         // 音频解码/重采样/STFT 都留在 CPU（GPU 上反而慢），只在进模型前搬到 device
         let cpu = Device::Cpu;
         let (wav, sr) = load_audio(&path, &cpu)?;
@@ -233,7 +298,12 @@ impl GptSovitsModel {
             None
         };
         let ge = self.sovits.ge(&spec, sv.as_ref())?;
-        Ok((prompt, ge))
+        Ok(RefFeat {
+            prompt,
+            ge,
+            text_ids: Vec::new(),
+            bert: None,
+        })
     }
 }
 
@@ -280,6 +350,7 @@ fn load_voices(
                     "default".to_string(),
                     VoiceConfig {
                         ref_audio: name.to_string(),
+                        ref_text: None,
                         speed: None,
                     },
                 );

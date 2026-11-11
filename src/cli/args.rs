@@ -55,9 +55,9 @@ pub(crate) struct ServerCommonArgs {
 /// 桌宠三个模型的额外参数（只对 SenseVoice / Kokoro / Laya 生效，其余模型忽略）。
 #[derive(Args, Debug, Default)]
 pub(crate) struct PetServeArgs {
-    /// Laya 推理设备。**编译期决定**：cpu 用 `--features laya` 编，cuda 用
-    /// `--features laya-cuda`；对不上直接报错退出（不静默降级）。
-    #[arg(long, default_value = "cpu")]
+    /// 推理设备：`cpu` / `cuda` / `auto`（默认 auto：编译进了 cuda 就用 GPU）。
+    /// Laya 不看这个值（它由 `--features laya-cuda` 编译期决定），GPT-SoVITS 看。
+    #[arg(long, default_value = "auto")]
     pub device: String,
     /// Laya 低于这个置信度的 vla 判定回退 llm（默认 0.8，和 route.py 一致）。
     #[arg(long, default_value_t = 0.8)]
@@ -90,10 +90,6 @@ pub(crate) struct PathCommonArgs {
     /// config path for onnx/gguf model need extra config file
     #[arg(long)]
     pub config_path: Option<String>,
-
-    /// 推理设备：`cpu` / `cuda` / `auto`（默认 auto：编译进了 cuda 就用 GPU）
-    #[arg(long, default_value = "auto")]
-    pub device: String,
 }
 
 /// Arguments for the 'cli' subcommand (download + serve)
@@ -195,6 +191,10 @@ pub(crate) struct RunArgs {
     #[arg(short, long)]
     pub output: Option<String>,
 
+    /// 推理设备（`--device cpu/cuda/auto`）；和 serv 用同一个参数
+    #[command(flatten)]
+    pub pet: PetServeArgs,
+
     #[command(flatten)]
     pub path_common: PathCommonArgs,
 }
@@ -227,6 +227,10 @@ pub(crate) struct MultiArgs {
     /// Kokoro 模型目录（启用 TTS 角色）；首次会自动下载
     #[arg(long)]
     pub tts: Option<String>,
+    /// TTS 用哪个模型：默认 Kokoro（sherpa）；gpt-sovits-v2pro-zh 时 `--tts` 指向
+    /// 本地转换的 GPT-SoVITS 目录（不下载、不走 sherpa）
+    #[arg(long)]
+    pub tts_model: Option<WhichModel>,
     /// 启用 Laya 决策角色（模型优先用 HF 缓存，其次下载）
     #[arg(long)]
     pub laya: bool,

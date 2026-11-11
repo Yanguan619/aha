@@ -50,8 +50,10 @@ pub const fn compile_device() -> &'static str {
 ///
 /// 设备是**编译期**特征（sys1 的三选一），运行时只能校验，不能切。
 pub fn check_device(requested: &str) -> Result<()> {
-    let requested = if requested.trim().is_empty() {
-        "cpu"
+    // 空的 / auto 都表示"跟着编译特性走"：同一个 `--device` 还要给 GPT-SoVITS 用，
+    // 桌宠统一传 auto，laya 这边就按编译进的那个后端。
+    let requested = if requested.trim().is_empty() || requested.trim() == "auto" {
+        compile_device()
     } else {
         requested.trim()
     };

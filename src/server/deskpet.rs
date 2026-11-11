@@ -271,10 +271,12 @@ pub async fn handle_tts_stream(body: Bytes) -> Response {
     let sample_rate = {
         let guard = model_ref.read().await;
         let Some(model) = guard.instance.tts_model() else {
+            // 不是 sherpa 的模型（例如 GPT-SoVITS）就没有流式这条实现：回 404，
+            // 桌宠的 mouth 靠它判断"这条后端没有 /tts/stream"，退回整段 /v1/tts。
             return error_json(
-                StatusCode::BAD_REQUEST,
+                StatusCode::NOT_FOUND,
                 format!(
-                    "当前模型 {} 不是 Kokoro，无法合成",
+                    "当前模型 {} 不支持流式合成",
                     guard.which_model.as_string()
                 ),
             );

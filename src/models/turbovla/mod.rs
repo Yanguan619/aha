@@ -326,7 +326,7 @@ impl TurboVlaModel {
             &state_host,
             |pixel, st| {
                 let mut timer = Timer::disabled();
-                Ok(self.compute(pixel, &feat, st, &mut timer)?.1.2)
+                Ok(self.compute(pixel.tensor(), &feat, st.tensor(), &mut timer)?.1.2)
             },
         )?;
 

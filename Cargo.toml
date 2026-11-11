@@ -16,7 +16,11 @@ serde_json = "1.0.145"
 anyhow = "1.0.100"
 ffmpeg-next = { version = "8.0.0", optional = true }
 image = "0.25.8"
-reqwest = { version = "0.13", features = ["blocking"] }
+reqwest = { version = "0.13", features = ["blocking", "json", "stream"] }
+# 自己给 reqwest 配根证书：0.13 的 rustls 默认走 rustls-platform-verifier，
+# Android 上没有 JVM context 会 panic，内置 webpki-roots 桌面/Android 通用。
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std"] }
+webpki-roots = "1.0"
 base64 = "0.22.1"
 num = "0.4.3"
 minijinja = "2.12.0"
@@ -36,7 +40,6 @@ tokio = { version = "1.47.1", features = [
 ] }
 hound = "3.5.1"
 clap = { version = "4.5.51", features = ["derive"] }
-modelscope = "0.1.5"
 dirs = "6.0.0"
 sysinfo = "0.33"
 url = "2.5.7"

@@ -1,2 +1,7 @@
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# gemm-f16 的 aarch64 内联汇编要求 fullfp16；android target 默认不带。
+# 代价：要求设备支持 FP16 算术（ARMv8.2+）。
+[target.aarch64-linux-android]
+rustflags = ["-C", "target-feature=+fp16"]

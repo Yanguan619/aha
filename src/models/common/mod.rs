@@ -1,5 +1,7 @@
 use anyhow::Result;
 use candle_core::Tensor;
+#[cfg(feature = "cuda")]
+pub mod cuda_graph;
 pub mod embedding;
 pub mod generate;
 pub mod gguf;
