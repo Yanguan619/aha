@@ -23,6 +23,7 @@ pub(crate) mod process;
 pub(crate) mod reranker;
 #[cfg(feature = "vla")]
 pub(crate) mod vla;
+pub(crate) mod warmup;
 
 /// Default request body limit (5 MiB), same as the previous rocket configuration.
 const DEFAULT_BODY_LIMIT: usize = 5 * 1024 * 1024;

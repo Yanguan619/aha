@@ -68,6 +68,15 @@ pub(crate) struct PetServeArgs {
     /// 推理线程数（sherpa-onnx 的 intra-op 线程；0 = 按 CPU 自动，取逻辑核数）。
     #[arg(long, default_value_t = 0)]
     pub threads: i32,
+    /// 关掉启动预热。
+    ///
+    /// 预热会在端口开之前空跑一遍每个角色（ASR / TTS / 决策 / VLA），
+    /// 把 ONNX Runtime 选 provider、candle 搬权重、CUDA 加载 kernel 这些
+    /// **一次性**开销提前。这样用户第一次说话就不会"特别慢"。
+    ///
+    /// 代价是启动慢几秒。调试或模型不在本机时可以用这个开关跳过。
+    #[arg(long)]
+    pub no_warmup: bool,
 }
 
 #[derive(Args, Debug)]

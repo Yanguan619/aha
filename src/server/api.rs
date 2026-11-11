@@ -62,6 +62,12 @@ pub struct InitOptions {
     pub request_timeout_ms: u64,
     /// sherpa-onnx 的推理线程数；0 = 按 CPU 自动。
     pub threads: i32,
+    /// 关掉启动预热（默认开）。
+    ///
+    /// 预热会在端口开之前空跑一遍每个角色，把「首次推理的一次性开销」提前。
+    /// 代价是启动慢一点（每个角色几秒）。如果不需要这个延迟收益
+    /// （比如调试、或者模型在别的机器上跑），可以关掉。
+    pub no_warmup: bool,
 }
 
 /// 默认推理线程数（sherpa-onnx / onnxruntime 的 intra-op 线程）。
@@ -313,9 +319,59 @@ pub fn init_multi(specs: Vec<ModelSpec>, opts: &InitOptions) -> anyhow::Result<(
     Ok(())
 }
 
+/// 预热所有已加载的角色。
+///
+/// 在**端口监听之前**调用：预热的目的就是把首个请求的一次性开销提前，
+/// 如果在端口开之后才做，客户端可能已经打过来了。
+///
+/// 预热失败不影响服务启动（每个角色各自 try，失败只记日志）。
+pub async fn warmup_all(enabled: bool) {
+    if !enabled {
+        eprintln!("[warmup] 已关掉启动预热（--no-warmup）");
+        return;
+    }
+    let roles = role_models();
+    if roles.is_empty() {
+        return;
+    }
+    eprintln!("[warmup] 开始预热 {} 个角色", roles.len());
+    let started = std::time::Instant::now();
+    for (role, model_ref) in roles {
+        crate::server::warmup::warmup_model(role, &model_ref).await;
+    }
+    eprintln!(
+        "[warmup] 预热结束，总耗时 {} ms",
+        started.elapsed().as_millis()
+    );
+}
+
 /// 按 key（角色或模型 id）取已加载的模型。
 pub(crate) fn model_by_key(key: &str) -> Option<SharedModel> {
     REGISTRY.get()?.models.get(key).cloned()
+}
+
+/// 注册表里所有**角色**及其模型句柄（去重）。
+///
+/// 角色就是桌宠关心的那几个能力（`asr` / `tts` / `system1` / `vla`）。
+/// 同一个模型可能注册在多个 key 下（角色名、模型 id、展示名），这里按
+/// **模型实例**去重，避免同一个模型被预热好几次。
+pub(crate) fn role_models() -> Vec<(&'static str, SharedModel)> {
+    let Some(registry) = REGISTRY.get() else {
+        return Vec::new();
+    };
+    let mut roles: Vec<(&'static str, SharedModel)> = Vec::new();
+    for role in ["asr", "tts", "system1", "vla"] {
+        if let Some(model) = registry.models.get(role) {
+            // 用指针地址判断是不是同一个实例（不同 key 指向同一个 Arc）。
+            let already = roles
+                .iter()
+                .any(|(_, other)| std::sync::Arc::ptr_eq(other, model));
+            if !already {
+                roles.push((role, model.clone()));
+            }
+        }
+    }
+    roles
 }
 
 /// 按请求里的 `model` 字段取模型；没给/不认识时回落到默认。

@@ -148,8 +148,11 @@ pub(crate) async fn run_cli(args: CliArgs) -> anyhow::Result<()> {
             min_confidence: pet.min_confidence,
             request_timeout_ms: pet.request_timeout_ms,
             threads: pet.threads,
+            no_warmup: pet.no_warmup,
         },
     )?;
+    // 预热：把首个请求的一次性开销挪到端口开之前。
+    crate::server::api::warmup_all(!pet.no_warmup).await;
     start_http_server(
         server_common.address,
         server_common.port,
@@ -221,8 +224,11 @@ pub(crate) async fn run_serv(args: ServArgs) -> anyhow::Result<()> {
             min_confidence: pet.min_confidence,
             request_timeout_ms: pet.request_timeout_ms,
             threads: pet.threads,
+            no_warmup: pet.no_warmup,
         },
     )?;
+    // 预热：把首个请求的一次性开销挪到端口开之前。
+    crate::server::api::warmup_all(!pet.no_warmup).await;
     start_http_server(
         server_common.address,
         server_common.port,
@@ -322,8 +328,11 @@ pub(crate) async fn run_multi(args: MultiArgs) -> anyhow::Result<()> {
             min_confidence: pet.min_confidence,
             request_timeout_ms: pet.request_timeout_ms,
             threads: pet.threads,
+            no_warmup: pet.no_warmup,
         },
     )?;
+    // 预热：把首个请求的一次性开销挪到端口开之前。
+    crate::server::api::warmup_all(!pet.no_warmup).await;
     // 三条角色的路径不同（/v1/asr、/v1/tts、/v1/decisions），一个端口就够。
     start_http_server(
         server_common.address,

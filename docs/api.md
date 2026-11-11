@@ -18,6 +18,32 @@ You can customize this when starting the service:
 aha cli -m Qwen/Qwen3-0.6B -a 0.0.0.0 -p 8080
 ```
 
+### Startup warmup
+
+Before the port starts listening, the server replays each loaded role once to move the
+one-time costs of the *first* inference ahead of time:
+
+- **ASR**: feeds 0.5s of silence through the recognizer;
+- **TTS**: does a full synthesis of the shortest possible utterance with the first voice;
+- **Decisions (Laya)**: runs one routing pass;
+- **VLA**: runs one forward pass with a placeholder image and instruction (CUDA graph
+  capture depends on the instruction so it can't be pre-captured, but the text/vision
+  encoder kernels can be).
+
+The first request otherwise pays for ONNX Runtime provider selection, weight staging and
+CUDA kernel loading — exactly when the user starts speaking.
+
+Measured (GPT-SoVITS v2Pro, CPU, median of 6 restarts):
+
+| | first TTS request | steady state |
+|---|---|---|
+| warmup off | 1404 ms | ~850 ms |
+| **warmup on** | **870 ms** | ~850 ms |
+
+Warmup itself takes about 2s (one-off, before the port opens).
+
+Use `--no-warmup` to skip it (useful when debugging or when the model lives elsewhere).
+
 ### Authentication
 
 Currently, AHA does not require authentication. All endpoints are publicly accessible on the configured address/port.

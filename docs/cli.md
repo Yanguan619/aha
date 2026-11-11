@@ -22,6 +22,7 @@ aha [COMMAND] [OPTIONS]
 | `--mmproj-path <MMPROJ_PATH>` | Local mmproj GGUF weight | - |
 | `--onnx-path <ONNX_PATH>` | Local ONNX weight（required when using ONNX models） | - |
 | `--config-path <ONNX_PATH>` | extra config path for gguf/onnx | - |
+| `--no-warmup` | Disable startup warmup (on by default). Warmup replays each role once before the port opens, so the first real request isn't slower than the rest | off |
 | `-h, --help` | Display help information | - |
 | `-V, --version` | Display version number | - |
 

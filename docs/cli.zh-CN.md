@@ -22,6 +22,7 @@ aha [COMMAND] [OPTIONS]
 | `--mmproj-path <MMPROJ_PATH>` | 本地 mmproj GGUF 模型权重（可选，未指定则不加载该模块） | - |
 | `--onnx-path <ONNX_PATH>` | 本地 ONNX 模型权重 （使用ONNX模型时必选） | - |
 | `--config-path <ONNX_PATH>` | GGUF/ONNX 需要的额外配置路径(可选) | - |
+| `--no-warmup` | 关掉启动预热（默认开）。预热会在端口开之前空跑一遍每个角色，把首次推理的一次性开销提前 | 关 |
 | `-h, --help` | 显示帮助信息 | - |
 | `-V, --version` | 显示版本号 | - |
 
