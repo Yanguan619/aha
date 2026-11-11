@@ -36,8 +36,8 @@ aha is a high-performance, cross-platform AI inference engine built with Rust an
 | **Text** | Qwen3, MiniCPM4, MiniCPM5, LFM2, LFM2.5 |
 | **Vision** | Qwen2.5-VL, Qwen3-VL, Qwen3.5, <br> LFM2.5-VL, LFM2-VL |
 | **OCR** | DeepSeek-OCR, DeepSeek-OCR-2 , PaddleOCR-VL <br> PaddleOCR-VL1.5, PaddleOCR-VL1.6, Hunyuan-OCR <br> GLM-OCR |
-| **ASR** | GLM-ASR-Nano, Fun-ASR-Nano, Qwen3-ASR, <br> SenseVoice (sherpa-onnx, `--features sherpa`) |
-| **TTS** | VoxCPM, VoxCPM1.5, VoxCPM2, Moss-TTS-Nano, <br> Kokoro (sherpa-onnx, `--features sherpa`) |
+| **ASR** | GLM-ASR-Nano, Fun-ASR-Nano, Qwen3-ASR, <br> SenseVoice (sherpa-onnx, `--features sherpa-asr`) |
+| **TTS** | VoxCPM, VoxCPM1.5, VoxCPM2, Moss-TTS-Nano, <br> Kokoro (sherpa-onnx, `--features sherpa-tts`) |
 | **Image** | RMBG-2.0 (background removal) |
 | **Embedding** | Qwen3-Embedding, all-MiniLM-L6-v2 |
 | **Reranker** | Qwen3-Reranker |
@@ -99,16 +99,24 @@ cargo build --release --features cuda,flash-attn
 cargo build --release --features ffmpeg
 
 # sherpa-onnx backends: SenseVoice ASR + Kokoro TTS
-# First build downloads a prebuilt C++ static library (~117 MB).
+# The two models are independent features — enable only what you need.
+# `sherpa` is a compatibility alias for `sherpa-asr,sherpa-tts`.
+# First build downloads a prebuilt C++ library (~117 MB).
 # Set SHERPA_ONNX_ARCHIVE_DIR to reuse an already downloaded archive.
-cargo build --release --features sherpa
+cargo build --release --features sherpa-asr   # SenseVoice only
+cargo build --release --features sherpa-tts   # Kokoro only
+cargo build --release --features sherpa       # both
 ```
 
-> **sherpa-onnx note**: the `sherpa` feature links the sherpa-onnx **shared** library,
-> so the produced binary needs `onnxruntime.dll` and `sherpa-onnx-*.dll` next to it
-> (they are copied into `target/<profile>/` by the build script).
+> **sherpa-onnx note**: the `sherpa-*` features link the sherpa-onnx **shared**
+> library, so the produced binary needs `onnxruntime.dll` and `sherpa-onnx-*.dll`
+> next to it (they are copied into `target/<profile>/` by the build script).
 > Models for these two backends are **not** hosted on ModelScope — pass a local
 > directory with `--weight-path`.
+>
+> Do **not** add `sherpa-onnx` to `[dependencies]` by hand: the crate defaults to
+> `static`, which collides with the protobuf embedded in `sentencepiece` (LNK2005).
+> Always go through `onnx-runtime` / `sherpa-asr` / `sherpa-tts`.
 
 **Android (aarch64)**
 
@@ -117,7 +125,7 @@ resolves the NDK, fixes up CMake (Ninja + CMake's own Android support) and the
 `+fp16` flag candle needs:
 
 ```bash
-pwsh scripts/build-android.ps1 -Release        # -> target/aarch64-linux-android/release/aha
+python scripts/build_android.py --release      # -> target/aarch64-linux-android/release/aha
 ```
 
 The result is arm64-v8a, API 26+, and assumes FP16 arithmetic (ARMv8.2+, i.e. phones

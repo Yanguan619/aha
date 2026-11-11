@@ -88,10 +88,10 @@ pub enum WhichModel {
     FunASRNano2512,
     #[value(name = "ZhipuAI/GLM-OCR")]
     GlmOCR,
-    #[cfg(feature = "sherpa")]
+    #[cfg(feature = "sherpa-asr")]
     #[value(name = "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17")]
     SenseVoice,
-    #[cfg(feature = "sherpa")]
+    #[cfg(feature = "sherpa-tts")]
     #[value(name = "csukuangfj/kokoro-multi-lang-v1_1")]
     Kokoro,
     #[cfg(feature = "laya")]
@@ -133,9 +133,19 @@ impl WhichModel {
 
     /// Models served through sherpa-onnx are not hosted on ModelScope, so they
     /// must be supplied with an explicit `--weight-path`.
-    #[cfg(feature = "sherpa")]
+    ///
+    /// 只编了其中一个后端时枚举里也只有对应的变体，所以按 feature 分开写。
+    #[cfg(any(feature = "sherpa-asr", feature = "sherpa-tts"))]
     pub fn is_sherpa_model(&self) -> bool {
-        matches!(self, WhichModel::SenseVoice | WhichModel::Kokoro)
+        #[cfg(feature = "sherpa-asr")]
+        if matches!(self, WhichModel::SenseVoice) {
+            return true;
+        }
+        #[cfg(feature = "sherpa-tts")]
+        if matches!(self, WhichModel::Kokoro) {
+            return true;
+        }
+        false
     }
 
     /// Laya 决策模型由 sys1 推理，模型目录/权重不在 ModelScope 上。
@@ -156,13 +166,13 @@ impl WhichModel {
         matches!(self, WhichModel::GptSovits)
     }
 
-    /// 桌宠委托的三个模型（SenseVoice / Kokoro / Laya）。
+    /// 桌宠委托的模型（SenseVoice / Kokoro / Laya）。
     ///
     /// 它们由 sherpa/sys1 推理，**不走 onnx 门禁**——尤其是 SenseVoice 的模型 id 里
     /// 就带 "onnx"（`sherpa-onnx-...`），会被 [`Self::is_onnx`] 误判成"onnx 模型不支持"。
-    #[cfg(any(feature = "sherpa", feature = "laya"))]
+    #[cfg(any(feature = "sherpa-asr", feature = "sherpa-tts", feature = "laya"))]
     pub fn is_pet_delegated_model(&self) -> bool {
-        #[cfg(feature = "sherpa")]
+        #[cfg(any(feature = "sherpa-asr", feature = "sherpa-tts"))]
         if self.is_sherpa_model() {
             return true;
         }
@@ -173,7 +183,7 @@ impl WhichModel {
         false
     }
 
-    #[cfg(not(any(feature = "sherpa", feature = "laya")))]
+    #[cfg(not(any(feature = "sherpa-asr", feature = "sherpa-tts", feature = "laya")))]
     pub fn is_pet_delegated_model(&self) -> bool {
         false
     }
@@ -262,9 +272,9 @@ impl WhichModel {
             WhichModel::Qwen3Reranker0_6B
             | WhichModel::Qwen3Reranker4B
             | WhichModel::Qwen3Reranker8B => "reranker",
-            #[cfg(feature = "sherpa")]
+            #[cfg(feature = "sherpa-asr")]
             WhichModel::SenseVoice => "asr",
-            #[cfg(feature = "sherpa")]
+            #[cfg(feature = "sherpa-tts")]
             WhichModel::Kokoro => "tts",
             #[cfg(feature = "laya")]
             WhichModel::Laya => "system1",

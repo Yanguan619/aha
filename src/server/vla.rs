@@ -12,21 +12,10 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::{Engine, prelude::BASE64_STANDARD};
-use serde::Deserialize;
 use serde_json::json;
 
+use crate::params::actions::ActionsRequest;
 use crate::server::api::model_by_key;
-
-#[derive(Deserialize)]
-struct ActionsRequest {
-    #[serde(default)]
-    instruction: String,
-    #[serde(default)]
-    state: Vec<f32>,
-    /// 每个视角一张图（JPEG/PNG；容忍 `data:image/...;base64,` 前缀）。
-    #[serde(default)]
-    images: Vec<String>,
-}
 
 pub async fn handle_actions(body: Bytes) -> Response {
     if body.is_empty() {

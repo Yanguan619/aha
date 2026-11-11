@@ -37,6 +37,30 @@ cargo build --release
 cargo build --features cuda,flash-attn
 cargo build --features metal
 cargo build --features ffmpeg
+
+# sherpa-onnx backends (SenseVoice ASR / Kokoro TTS)
+# The two models are independent — pick only what you need.
+cargo build --features sherpa-asr   # SenseVoice only
+cargo build --features sherpa-tts   # Kokoro only
+cargo build --features sherpa       # both (= sherpa-asr + sherpa-tts)
+```
+
+> **Never add `sherpa-onnx` by hand.** It is `optional` with `default-features = false`
+> in `[dependencies]` and must be enabled through the `onnx-runtime` feature, which
+> forces `shared` linking. Declaring `sherpa-onnx = "2.0.1"` yourself falls back to
+> `static` and collides with the protobuf embedded in `sentencepiece` (LNK2005 on
+> Windows). The feature graph is:
+>
+> ```
+> onnx-runtime          # dependency + link mode only, no models
+>   ├── sherpa-asr      # SenseVoice ASR
+>   └── sherpa-tts      # Kokoro TTS
+> sherpa = sherpa-asr + sherpa-tts   # compatibility alias
+> ```
+>
+> Note these two models run on ONNX Runtime and **do not honour candle's
+> `Device`/`DType`** — `--device cuda` has no effect on them (a warning is logged,
+> it is not silently dropped).
 ```
 
 ### Development Workflow

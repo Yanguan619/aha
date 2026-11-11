@@ -35,8 +35,8 @@ aha 是一款基于 Rust 和 Candle 框架构建的高性能跨平台 AI 推理�
 | **文本** | Qwen3, MiniCPM4, MiniCPM5, LFM2, LFM2.5 |
 | **视觉** | Qwen2.5-VL, Qwen3-VL, Qwen3.5 <br> LFM2.5-VL, LFM2-VL |
 | **OCR** | DeepSeek-OCR, DeepSeek-OCR-2, PaddleOCR-VL,  <br>PaddleOCR-VL1.5, PaddleOCR-VL1.6, Hunyuan-OCR <br> GLM-OCR |
-| **ASR** | GLM-ASR-Nano, Fun-ASR-Nano, Qwen3-ASR, <br> SenseVoice (sherpa-onnx, `--features sherpa`) |
-| **TTS** | VoxCPM, VoxCPM1.5, VoxCPM2, Moss-TTS-Nano, <br> Kokoro (sherpa-onnx, `--features sherpa`) |
+| **ASR** | GLM-ASR-Nano, Fun-ASR-Nano, Qwen3-ASR, <br> SenseVoice (sherpa-onnx, `--features sherpa-asr`) |
+| **TTS** | VoxCPM, VoxCPM1.5, VoxCPM2, Moss-TTS-Nano, <br> Kokoro (sherpa-onnx, `--features sherpa-tts`) |
 | **图像** | RMBG-2.0 (背景移除) |
 | **嵌入** | Qwen3-Embedding, all-MiniLM-L6-v2 |
 | **重排序** | Qwen3-Reranker |
@@ -97,15 +97,22 @@ cargo build --release --features cuda,flash-attn
 # FFmpeg (多媒体处理)
 cargo build --release --features ffmpeg
 
-# sherpa-onnx 后端：SenseVoice ASR + Kokoro TTS
-# 首次构建会下载预编译 C++ 静态库（约 117 MB）
+# sherpa-onnx 后端：SenseVoice ASR / Kokoro TTS
+# 两个模型是独立特性，按需只开一个；`sherpa` 是两者之和的兼容别名。
+# 首次构建会下载预编译 C++ 库（约 117 MB）
 # 已有压缩包时用 SHERPA_ONNX_ARCHIVE_DIR 指向其目录，避免重复下载
-cargo build --release --features sherpa
+cargo build --release --features sherpa-asr   # 只带 SenseVoice
+cargo build --release --features sherpa-tts   # 只带 Kokoro
+cargo build --release --features sherpa       # 两个都要
 ```
 
-> **sherpa-onnx 说明**：`sherpa` 特性链接的是 sherpa-onnx **动态库**，产物旁边需要
+> **sherpa-onnx 说明**：`sherpa-*` 特性链接的是 sherpa-onnx **动态库**，产物旁边需要
 > `onnxruntime.dll` 和 `sherpa-onnx-*.dll`（构建脚本会自动拷到 `target/<profile>/`）。
 > 这两个后端的模型**没有托管在 ModelScope**，请用 `--weight-path` 指向本地目录。
+>
+> **不要**手动往 `[dependencies]` 里加 `sherpa-onnx`：它默认走 `static`，会和
+> `sentencepiece` 内嵌的 protobuf 撞 LNK2005。一律走 `onnx-runtime` / `sherpa-asr` /
+> `sherpa-tts` 这三个 feature。
 
 **Android（aarch64）**
 
@@ -113,7 +120,7 @@ cargo build --release --features sherpa
 CMake（Ninja + CMake 自带的 Android 支持）以及 candle 需要的 `+fp16`：
 
 ```bash
-pwsh scripts/build-android.ps1 -Release        # -> target/aarch64-linux-android/release/aha
+python scripts/build_android.py --release      # -> target/aarch64-linux-android/release/aha
 ```
 
 产物是 arm64-v8a、API 26+，并要求设备支持 FP16 算术（ARMv8.2+，约 2018 年后的机器）。

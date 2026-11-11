@@ -37,6 +37,28 @@ cargo build --release
 cargo build --features cuda,flash-attn
 cargo build --features metal
 cargo build --features ffmpeg
+
+# sherpa-onnx 后端（SenseVoice ASR / Kokoro TTS）
+# 两个模型可以单独开，互不牵连：只要 ASR 就别开 sherpa-tts。
+cargo build --features sherpa-asr   # 只带 SenseVoice
+cargo build --features sherpa-tts   # 只带 Kokoro
+cargo build --features sherpa       # 两个都要（= sherpa-asr + sherpa-tts）
+```
+
+> **sherpa-onnx 不要自己加依赖**：`sherpa-onnx` 在 `[dependencies]` 里是 `optional`
+> 且 `default-features = false`，必须由 `onnx-runtime` feature 打开并强制 `shared`
+> 链接。直接写 `sherpa-onnx = "2.0.1"` 会退回 `static`，和 `sentencepiece` 内嵌的
+> protobuf 撞 LNK2005 重复符号。三个 feature 的关系是：
+>
+> ```
+> onnx-runtime          # 只管依赖 + 链接方式，不带任何模型
+>   ├── sherpa-asr      # SenseVoice ASR
+>   └── sherpa-tts      # Kokoro TTS
+> sherpa = sherpa-asr + sherpa-tts   # 兼容别名
+> ```
+>
+> 另外：这两个模型走 ONNX Runtime，**不接 candle 的 `Device`/`DType`**，
+> `--device cuda` 对它们不生效（会打印 warning，不会静默）。
 ```
 
 ### 开发工作流程

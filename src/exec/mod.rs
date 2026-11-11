@@ -11,7 +11,7 @@ pub mod glm_ocr;
 #[cfg(feature = "gpt-sovits")]
 pub mod gpt_sovits;
 pub mod hunyuan_ocr;
-#[cfg(feature = "sherpa")]
+#[cfg(feature = "sherpa-tts")]
 pub mod kokoro;
 pub mod lfm2;
 pub mod lfm2vl;
@@ -26,7 +26,7 @@ pub mod qwen3_embedding;
 pub mod qwen3_reranker;
 pub mod qwen3vl;
 pub mod rmbg2_0;
-#[cfg(feature = "sherpa")]
+#[cfg(feature = "sherpa-asr")]
 pub mod sense_voice;
 pub mod voxcpm;
 

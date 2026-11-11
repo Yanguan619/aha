@@ -98,13 +98,13 @@ pub(crate) async fn run_cli(args: CliArgs) -> anyhow::Result<()> {
             path_common.mmproj_path,
         )
     } else if model.is_onnx() && !model.is_pet_delegated_model() {
-        // 桌宠三个模型走 sherpa/sys1，不进 onnx 门禁（SenseVoice 的 id 里就带 "onnx"）
+        // 桌宠模型走 sherpa/sys1，不进 onnx 门禁（SenseVoice 的 id 里就带 "onnx"）
         return Err(anyhow!("onnx model not support now"));
     } else {
         let model_path = match path_common.weight_path {
             Some(path) => path,
             None => {
-                #[cfg(feature = "sherpa")]
+                #[cfg(any(feature = "sherpa-asr", feature = "sherpa-tts"))]
                 if model.is_sherpa_model() {
                     return Err(anyhow!(
                         "{model_id} is served by sherpa-onnx and is not hosted on ModelScope.\n\
@@ -182,7 +182,7 @@ pub(crate) async fn run_serv(args: ServArgs) -> anyhow::Result<()> {
         model_path = "GGUF".to_string();
         (path_common.gguf_path, path_common.mmproj_path)
     } else if model.is_onnx() && !model.is_pet_delegated_model() {
-        // 桌宠三个模型走 sherpa/sys1，不进 onnx 门禁（SenseVoice 的 id 里就带 "onnx"）
+        // 桌宠模型走 sherpa/sys1，不进 onnx 门禁（SenseVoice 的 id 里就带 "onnx"）
         return Err(anyhow!("onnx model not support now"));
     } else {
         match weight_path.clone() {
@@ -194,7 +194,7 @@ pub(crate) async fn run_serv(args: ServArgs) -> anyhow::Result<()> {
 
     // 桌宠委托模式：SenseVoice / Kokoro 首次启动自己按文件列表下载（必填文件齐了就跳过）；
     // Laya 走 sys1 的 hub（--weight-path 优先，其次 HF 缓存，最后联网下）。
-    #[cfg(feature = "sherpa")]
+    #[cfg(any(feature = "sherpa-asr", feature = "sherpa-tts"))]
     if model.is_sherpa_model() {
         tracing::info!(dir = %model_path, model = %model.as_string(), "检查 sherpa 模型文件");
         aha::models::common::sherpa::ensure_downloaded(&model_path, model)?;
@@ -255,38 +255,34 @@ pub(crate) async fn run_multi(args: MultiArgs) -> anyhow::Result<()> {
     } = args;
 
     let mut specs: Vec<ModelSpec> = Vec::new();
-    // tts 角色用哪个模型：默认 Kokoro（sherpa）；传 gpt-sovits-v2pro-zh 时换成
-    // 本地转换的 GPT-SoVITS（--tts 指向转换后的目录，不走 sherpa、不下载）。
-    #[cfg(feature = "sherpa")]
-    let tts_model = tts_model.unwrap_or(WhichModel::Kokoro);
-    #[cfg(not(feature = "sherpa"))]
-    let tts_model =
-        tts_model.ok_or_else(|| anyhow!("这个二进制没编 sherpa 特性，--tts 必须配 --tts-model"))?;
 
-    #[cfg(feature = "sherpa")]
-    {
-        if let Some(dir) = asr.as_deref() {
-            tracing::info!(dir = %dir, role = "asr", "检查 sherpa 模型文件");
-            aha::models::common::sherpa::ensure_downloaded(dir, WhichModel::SenseVoice)?;
-            specs.push(ModelSpec::new("asr", WhichModel::SenseVoice, dir));
-        }
-        if let Some(dir) = tts.as_deref()
-            && tts_model.is_sherpa_model()
-        {
+    // asr 角色：只有 sherpa-asr（SenseVoice）能提供。
+    #[cfg(feature = "sherpa-asr")]
+    if let Some(dir) = asr.as_deref() {
+        tracing::info!(dir = %dir, role = "asr", "检查 sherpa 模型文件");
+        aha::models::common::sherpa::ensure_downloaded(dir, WhichModel::SenseVoice)?;
+        specs.push(ModelSpec::new("asr", WhichModel::SenseVoice, dir));
+    }
+    #[cfg(not(feature = "sherpa-asr"))]
+    if asr.is_some() {
+        return Err(anyhow!("这个二进制没编 sherpa-asr 特性，不能启用 asr 角色"));
+    }
+
+    // tts 角色用哪个模型：默认 Kokoro（sherpa-tts）；传 gpt-sovits-v2pro-zh 时换成
+    // 本地转换的 GPT-SoVITS（--tts 指向转换后的目录，不走 sherpa、不下载）。
+    #[cfg(feature = "sherpa-tts")]
+    let tts_model = tts_model.unwrap_or(WhichModel::Kokoro);
+    #[cfg(not(feature = "sherpa-tts"))]
+    let tts_model = tts_model
+        .ok_or_else(|| anyhow!("这个二进制没编 sherpa-tts 特性，--tts 必须配 --tts-model"))?;
+
+    if let Some(dir) = tts.as_deref() {
+        #[cfg(any(feature = "sherpa-asr", feature = "sherpa-tts"))]
+        if tts_model.is_sherpa_model() {
             tracing::info!(dir = %dir, role = "tts", "检查 sherpa 模型文件");
             aha::models::common::sherpa::ensure_downloaded(dir, tts_model)?;
         }
-        if let Some(dir) = tts.as_deref() {
-            specs.push(ModelSpec::new("tts", tts_model, dir));
-        }
-    }
-    #[cfg(not(feature = "sherpa"))]
-    if let Some(dir) = tts.as_deref() {
         specs.push(ModelSpec::new("tts", tts_model, dir));
-    }
-    #[cfg(not(feature = "sherpa"))]
-    if asr.is_some() {
-        return Err(anyhow!("这个二进制没编 sherpa 特性，不能启用 asr 角色"));
     }
 
     #[cfg(feature = "laya")]
@@ -532,11 +528,11 @@ pub(crate) fn run_run(args: RunArgs) -> anyhow::Result<()> {
         WhichModel::GlmOCR => {
             glm_ocr::GlmOcrExec::run(&input, output.as_deref(), &weight_path)?;
         }
-        #[cfg(feature = "sherpa")]
+        #[cfg(feature = "sherpa-asr")]
         WhichModel::SenseVoice => {
             sense_voice::SenseVoiceExec::run(&input, output.as_deref(), &weight_path)?;
         }
-        #[cfg(feature = "sherpa")]
+        #[cfg(feature = "sherpa-tts")]
         WhichModel::Kokoro => {
             kokoro::KokoroExec::run(&input, output.as_deref(), &weight_path)?;
         }

@@ -11,7 +11,7 @@ pub mod model_mapping;
 pub mod modules;
 pub mod reranker;
 pub mod sample;
-#[cfg(feature = "sherpa")]
+#[cfg(any(feature = "sherpa-asr", feature = "sherpa-tts"))]
 pub mod sherpa;
 
 /// 多模态模型的特征数据

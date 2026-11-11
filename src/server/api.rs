@@ -21,6 +21,9 @@ use serde::Serialize;
 use std::net::SocketAddr;
 use tokio::sync::RwLock;
 
+use crate::params::health::HealthResponse;
+use crate::params::models::{ModelObject, ModelsListResponse};
+use crate::params::shutdown::ShutdownResponse;
 use crate::server::error;
 use crate::server::process::cleanup_pid_file;
 
@@ -222,13 +225,13 @@ fn is_laya_spec(spec: &ModelSpec) -> bool {
 /// 模型类型 → 角色/类名（SenseVoice→asr、Kokoro→tts、Laya→system1）。
 /// `/v1/*` 端点按这个类名取模型；单模型 `serv --model <x>` 也会自动注册。
 fn role_of(model: WhichModel) -> Option<&'static str> {
-    #[cfg(feature = "sherpa")]
-    if model.is_sherpa_model() {
-        return match model {
-            WhichModel::SenseVoice => Some("asr"),
-            WhichModel::Kokoro => Some("tts"),
-            _ => None,
-        };
+    #[cfg(feature = "sherpa-asr")]
+    if matches!(model, WhichModel::SenseVoice) {
+        return Some("asr");
+    }
+    #[cfg(feature = "sherpa-tts")]
+    if matches!(model, WhichModel::Kokoro) {
+        return Some("tts");
     }
     #[cfg(feature = "laya")]
     if model.is_laya_model() {
@@ -556,16 +559,6 @@ pub(crate) async fn speech(
 
 // Health check endpoint
 
-#[derive(Serialize)]
-pub(crate) struct HealthResponse {
-    status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-    /// 已加载的角色/模型 key（桌宠据此判断"这一路好了没"）。
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    models: Vec<String>,
-}
-
 pub(crate) async fn health() -> (StatusCode, Json<HealthResponse>) {
     let models = loaded_keys();
     if models.is_empty() {
@@ -586,22 +579,6 @@ pub(crate) async fn health() -> (StatusCode, Json<HealthResponse>) {
 }
 
 // Models endpoint (OpenAI-compatible format)
-
-/// OpenAI-compatible model object
-#[derive(Serialize)]
-struct ModelObject {
-    id: String,
-    object: String,
-    created: Option<i64>,
-    owned_by: String,
-}
-
-/// OpenAI-compatible models list response
-#[derive(Serialize)]
-struct ModelsListResponse {
-    object: String,
-    data: Vec<ModelObject>,
-}
 
 pub(crate) async fn models() -> (StatusCode, Json<serde_json::Value>) {
     let Some(registry) = REGISTRY.get() else {
@@ -635,10 +612,6 @@ pub(crate) async fn models() -> (StatusCode, Json<serde_json::Value>) {
 }
 
 // Shutdown endpoint
-#[derive(Serialize)]
-struct ShutdownResponse {
-    message: String,
-}
 
 pub(crate) async fn shutdown(
     State(shutdown_flag): State<Arc<AtomicBool>>,

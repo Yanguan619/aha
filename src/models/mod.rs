@@ -11,7 +11,7 @@ pub mod glm_ocr;
 pub mod gpt_sovits;
 pub mod hunyuan_ocr;
 pub mod index_tts;
-#[cfg(feature = "sherpa")]
+#[cfg(feature = "sherpa-tts")]
 pub mod kokoro;
 #[cfg(feature = "laya")]
 pub mod laya;
@@ -32,7 +32,7 @@ pub mod qwen3_embedding;
 pub mod qwen3_reranker;
 pub mod qwen3vl;
 pub mod rmbg2_0;
-#[cfg(feature = "sherpa")]
+#[cfg(feature = "sherpa-asr")]
 pub mod sense_voice;
 pub mod voxcpm;
 pub mod voxcpm_refact;
@@ -106,9 +106,9 @@ pub enum ModelInstance<'a> {
     GlmASRNano(GlmAsrNanoGenerateModel<'a>),
     FunASRNano(FunAsrNanoGenerateModel),
     GlmOCR(GlmOcrGenerateModel),
-    #[cfg(feature = "sherpa")]
+    #[cfg(feature = "sherpa-asr")]
     SenseVoice(crate::models::sense_voice::SenseVoiceModel),
-    #[cfg(feature = "sherpa")]
+    #[cfg(feature = "sherpa-tts")]
     Kokoro(crate::models::kokoro::KokoroTtsModel),
     #[cfg(feature = "laya")]
     Laya(crate::models::laya::LayaRouteModel),
@@ -149,9 +149,9 @@ impl<'a> GenerateModel for ModelInstance<'a> {
             ModelInstance::GlmASRNano(model) => model.generate(mes),
             ModelInstance::FunASRNano(model) => model.generate(mes),
             ModelInstance::GlmOCR(model) => model.generate(mes),
-            #[cfg(feature = "sherpa")]
+            #[cfg(feature = "sherpa-asr")]
             ModelInstance::SenseVoice(model) => model.generate(mes),
-            #[cfg(feature = "sherpa")]
+            #[cfg(feature = "sherpa-tts")]
             ModelInstance::Kokoro(model) => model.generate(mes),
             #[cfg(feature = "laya")]
             ModelInstance::Laya(_) => Err(anyhow!(
@@ -207,9 +207,9 @@ impl<'a> GenerateModel for ModelInstance<'a> {
             ModelInstance::GlmASRNano(model) => model.generate_stream(mes),
             ModelInstance::FunASRNano(model) => model.generate_stream(mes),
             ModelInstance::GlmOCR(model) => model.generate_stream(mes),
-            #[cfg(feature = "sherpa")]
+            #[cfg(feature = "sherpa-asr")]
             ModelInstance::SenseVoice(model) => model.generate_stream(mes),
-            #[cfg(feature = "sherpa")]
+            #[cfg(feature = "sherpa-tts")]
             ModelInstance::Kokoro(model) => model.generate_stream(mes),
             #[cfg(feature = "laya")]
             ModelInstance::Laya(_) => Err(anyhow!(
@@ -246,8 +246,8 @@ impl<'a> ModelInstance<'a> {
         }
     }
 
-    /// 取 SenseVoice（只有加载了 sense-voice 时才有）。`/v1/asr` 端点用它。
-    #[cfg(feature = "sherpa")]
+    /// 取 SenseVoice（只有编了 sherpa-asr 时才有）。`/v1/asr` 端点用它。
+    #[cfg(feature = "sherpa-asr")]
     pub fn asr_model(&self) -> Option<&crate::models::sense_voice::SenseVoiceModel> {
         match self {
             ModelInstance::SenseVoice(model) => Some(model),
@@ -264,8 +264,8 @@ impl<'a> ModelInstance<'a> {
         }
     }
 
-    /// 取 Kokoro（只有加载了 kokoro 时才有）。`/v1/tts` 端点用它。
-    #[cfg(feature = "sherpa")]
+    /// 取 Kokoro（只有编了 sherpa-tts 时才有）。`/v1/tts` 端点用它。
+    #[cfg(feature = "sherpa-tts")]
     pub fn tts_model(&self) -> Option<&crate::models::kokoro::KokoroTtsModel> {
         match self {
             ModelInstance::Kokoro(model) => Some(model),
@@ -309,6 +309,25 @@ pub fn load_gguf_model<'a>(
         }
     };
     Ok(model)
+}
+
+/// sherpa-onnx 后端不看 `device` / `dtype`：它用 ONNX Runtime 自己的 provider，
+/// 不接 candle 的 `Device`。所以 `--device cuda` 对 SenseVoice / Kokoro 是**静默失效**的。
+///
+/// 这里至少喊一声。不报错：默认就是 CPU，大多数调用方传的也是 CPU；
+/// 但只要传了非 CPU 却没生效，那就得让用户知道。
+#[cfg(any(feature = "sherpa-asr", feature = "sherpa-tts"))]
+fn warn_sherpa_ignores_device(model: WhichModel, device: Option<&Device>, dtype: Option<DType>) {
+    let non_cpu = matches!(device, Some(device) if !matches!(device, Device::Cpu));
+    if non_cpu || dtype.is_some() {
+        tracing::warn!(
+            model = %model.as_string(),
+            device = ?device,
+            dtype = ?dtype,
+            "sherpa-onnx 模型不走 candle 的 Device/精度：--device / --dtype 对它们不生效，\
+             实际执行由 ONNX Runtime 自己选 provider"
+        );
+    }
 }
 
 pub fn load_model<'a>(
@@ -409,16 +428,18 @@ pub fn load_model<'a>(
             let model = GlmOcrGenerateModel::init(path, device, dtype)?;
             ModelInstance::GlmOCR(model)
         }
-        #[cfg(feature = "sherpa")]
+        #[cfg(feature = "sherpa-asr")]
         WhichModel::SenseVoice => {
+            warn_sherpa_ignores_device(model_type, device, dtype);
             let model = crate::models::sense_voice::SenseVoiceModel::init_from_dir(
                 path,
                 if threads > 0 { threads } else { 4 },
             )?;
             ModelInstance::SenseVoice(model)
         }
-        #[cfg(feature = "sherpa")]
+        #[cfg(feature = "sherpa-tts")]
         WhichModel::Kokoro => {
+            warn_sherpa_ignores_device(model_type, device, dtype);
             let model = crate::models::kokoro::KokoroTtsModel::init(
                 path,
                 if threads > 0 { threads } else { 4 },

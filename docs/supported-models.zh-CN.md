@@ -102,8 +102,9 @@ ZhipuAI/GLM-OCR                          ZhipuAI              ocr          ✔
 | **Qwen3-ASR** | 0.6B <br> 1.7B | 中/英 | Qwen/Qwen3-ASR-0.6B <br> Qwen/Qwen3-ASR-1.7B | [Apache 2.0](https://huggingface.co/datasets/choosealicense/licenses/blob/main/markdown/apache-2.0.md) |
 | **SenseVoice**（sherpa-onnx） | 234M | 中/英/日/韩/粤 | csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17 | [Apache 2.0](https://huggingface.co/datasets/choosealicense/licenses/blob/main/markdown/apache-2.0.md) |
 
-> SenseVoice 走 sherpa-onnx（ONNX Runtime）而不是 candle，需要用 `--features sherpa` 构建。
-> 权重不在 ModelScope 上，请用 `--weight-path` 指向本地目录。
+> SenseVoice 走 sherpa-onnx（ONNX Runtime）而不是 candle，需要用 `--features sherpa-asr` 构建
+> （只想两个后端都带可以做 `--features sherpa`）。权重不在 ModelScope 上，请用
+> `--weight-path` 指向本地目录。
 
 
 ## 语音生成
@@ -112,6 +113,9 @@ ZhipuAI/GLM-OCR                          ZhipuAI              ocr          ✔
 |------|--------|------|------|
 | **VoxCPM** | 1<br>1.5<br>2 | OpenBMB/VoxCPM-0.5B <br> OpenBMB/VoxCPM1.5 <br> OpenBMB/VoxCPM2 | [Apache 2.0](https://huggingface.co/datasets/choosealicense/licenses/blob/main/markdown/apache-2.0.md) |
 | **Kokoro**（sherpa-onnx） | 82M | csukuangfj/kokoro-multi-lang-v1_1 | [Apache 2.0](https://huggingface.co/datasets/choosealicense/licenses/blob/main/markdown/apache-2.0.md) |
+
+> Kokoro 走 sherpa-onnx（ONNX Runtime）而不是 candle，需要用 `--features sherpa-tts` 构建。
+> 权重不在 ModelScope 上，请用 `--weight-path` 指向本地目录。
 
 ## 图像处理
 

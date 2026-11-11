@@ -16,23 +16,7 @@ use axum::{
 };
 use serde::Serialize;
 
-/// Error detail object, following the OpenAI API error schema.
-#[derive(Debug, Serialize)]
-pub(crate) struct ApiErrorDetail {
-    pub(crate) message: String,
-    #[serde(rename = "type")]
-    pub(crate) error_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) param: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) code: Option<String>,
-}
-
-/// Top-level error envelope.
-#[derive(Debug, Serialize)]
-pub(crate) struct ApiErrorBody {
-    pub(crate) error: ApiErrorDetail,
-}
+use crate::params::shared::{ApiErrorBody, ApiErrorDetail};
 
 /// Build an OpenAI-compatible error payload.
 pub(crate) fn api_error(

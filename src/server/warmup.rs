@@ -120,7 +120,7 @@ fn dispatch(role: &str, model_ref: &SharedModel) -> anyhow::Result<()> {
 /// 静音对识别结果是"空"或噪声，但**推理路径完全跑到了**：
 /// 声学编码器、特征提取、解码器、token 查表，全都热了。
 fn warmup_asr(model_ref: &SharedModel) -> anyhow::Result<()> {
-    #[cfg(feature = "sherpa")]
+    #[cfg(feature = "sherpa-asr")]
     {
         let guard = model_ref.blocking_write();
         let Some(model) = guard.instance.asr_model() else {
@@ -130,7 +130,7 @@ fn warmup_asr(model_ref: &SharedModel) -> anyhow::Result<()> {
         let silence = vec![0.0f32; 8_000];
         let _ = model.transcribe(&silence);
     }
-    #[cfg(not(feature = "sherpa"))]
+    #[cfg(not(feature = "sherpa-asr"))]
     {
         let _ = model_ref;
     }
@@ -155,7 +155,7 @@ fn warmup_asr(model_ref: &SharedModel) -> anyhow::Result<()> {
 ///
 /// 用一句话当输入（最短的合法输入），让 AR 尽快吐 EOS。
 fn warmup_tts(model_ref: &SharedModel) -> anyhow::Result<()> {
-    #[cfg(feature = "sherpa")]
+    #[cfg(feature = "sherpa-tts")]
     {
         let guard = model_ref.blocking_write();
         if let Some(model) = guard.instance.tts_model() {

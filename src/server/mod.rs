@@ -15,7 +15,12 @@ use tower_http::trace::TraceLayer;
 // ASR (Automatic Speech Recognition) API module
 pub(crate) mod api;
 pub(crate) mod asr;
-#[cfg(any(feature = "sherpa", feature = "laya", feature = "gpt-sovits"))]
+#[cfg(any(
+    feature = "sherpa-asr",
+    feature = "sherpa-tts",
+    feature = "laya",
+    feature = "gpt-sovits"
+))]
 pub(crate) mod deskpet;
 pub(crate) mod embedding;
 pub(crate) mod error;
@@ -118,14 +123,15 @@ fn build_router(shutdown_flag: Arc<AtomicBool>) -> Router {
             post(asr::transcriptions).layer(DefaultBodyLimit::max(MULTIPART_BODY_LIMIT)),
         );
 
-    // 桌宠契约：/v1/asr（裸 PCM16LE）、/v1/tts（WAV）、/v1/tts/stream（PCM 流）
-    // 由 sherpa 后端提供，/v1/decisions（Laya 决策，System-1 类模型）由 laya 后端提供；
-    // 没开对应 feature 时这些端点不存在。
-    #[cfg(any(feature = "sherpa", feature = "gpt-sovits"))]
+    // 桌宠契约：/v1/asr（裸 PCM16LE）、/v1/tts（WAV）、/v1/tts/stream（PCM 流）、
+    // /v1/decisions（Laya 决策，System-1 类模型）；没开对应 feature 时这些端点不存在。
+    //
+    // asr 和 tts 是**分开**的：只编了 sherpa-asr 时只有 /v1/asr，不会平白多出 TTS 端点。
+    #[cfg(any(feature = "sherpa-tts", feature = "gpt-sovits"))]
     let app = app
         .route("/v1/tts", post(deskpet::handle_tts))
         .route("/v1/tts/stream", post(deskpet::handle_tts_stream));
-    #[cfg(feature = "sherpa")]
+    #[cfg(feature = "sherpa-asr")]
     let app = app.route("/v1/asr", post(deskpet::handle_asr));
     #[cfg(feature = "laya")]
     let app = app.route("/v1/decisions", post(deskpet::handle_route));

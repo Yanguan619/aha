@@ -18,33 +18,43 @@
 //! 每个模型有自己的一把写锁（见 `api::registry`）：三个角色可以并发，但同一模型
 //! 一次只放一个请求进推理（sherpa/sys1 都不是并发安全的）。
 
-#[cfg(any(feature = "sherpa", feature = "gpt-sovits"))]
+#[cfg(any(feature = "sherpa-asr", feature = "sherpa-tts", feature = "gpt-sovits"))]
 use std::time::Instant;
 
-#[cfg(any(feature = "sherpa", feature = "gpt-sovits"))]
+#[cfg(any(feature = "sherpa-tts", feature = "gpt-sovits"))]
 use axum::body::Body;
+#[cfg(any(feature = "sherpa-asr", test))]
+use axum::http::HeaderMap;
 use axum::{
     Json,
     body::Bytes,
-    http::{HeaderMap, StatusCode, header},
+    http::StatusCode,
     response::{IntoResponse, Response},
 };
+#[cfg(any(feature = "sherpa-tts", feature = "gpt-sovits"))]
+use axum::http::header;
 use serde_json::json;
 
+use crate::params::decisions::DecisionRequest;
+use crate::params::tts::TtsRequest;
 use crate::server::api::model_by_key;
 
 /// ASR：单段上限 60 秒（和旧 asr-route 的 MAX_BYTES 一致）。
+/// `test` 也要算进去：`check_asr_request` 的单测不管开没开 sherpa-asr 都要跑。
+#[cfg(any(feature = "sherpa-asr", test))]
 const ASR_MAX_BYTES: usize = 16_000 * 2 * 60;
 /// ASR：小于 100ms 不值得识别。
+#[cfg(feature = "sherpa-asr")]
 const ASR_MIN_SAMPLES: usize = 16_000 / 10;
 /// TTS：请求体上限 64KB（一句台词远到不了）。
+#[cfg(any(feature = "sherpa-tts", feature = "gpt-sovits"))]
 const TTS_MAX_BODY: usize = 64 * 1024;
 
 // --------------------------------------------------------------------------- //
 // POST /v1/asr —— 裸 PCM16LE 16k 单声道
 // --------------------------------------------------------------------------- //
 
-#[cfg(feature = "sherpa")]
+#[cfg(feature = "sherpa-asr")]
 pub async fn handle_asr(headers: HeaderMap, body: Bytes) -> Response {
     if let Some(message) = check_asr_request(&headers, body.len()) {
         return fail(StatusCode::BAD_REQUEST, message);
@@ -94,6 +104,7 @@ pub async fn handle_asr(headers: HeaderMap, body: Bytes) -> Response {
     }
 }
 
+#[cfg(any(feature = "sherpa-asr", test))]
 fn check_asr_request(headers: &HeaderMap, len: usize) -> Option<String> {
     if len == 0 {
         return Some("没有音频数据".to_owned());
@@ -120,21 +131,7 @@ fn check_asr_request(headers: &HeaderMap, len: usize) -> Option<String> {
 // POST /v1/tts —— {text,voice?,speed?} → audio/wav
 // --------------------------------------------------------------------------- //
 
-#[cfg(any(feature = "sherpa", feature = "gpt-sovits"))]
-#[derive(serde::Deserialize)]
-struct TtsRequest {
-    #[serde(default)]
-    text: String,
-    #[serde(default)]
-    voice: Option<String>,
-    #[serde(default)]
-    speed: Option<f32>,
-}
-
-/// 解析 `/v1/tts` 和 `/v1/tts/stream` 共用的请求体。
-///
-/// 错误直接返回 `Response`（`clippy::result_large_err`：为了省一次 match 不理它）。
-#[cfg(any(feature = "sherpa", feature = "gpt-sovits"))]
+#[cfg(any(feature = "sherpa-tts", feature = "gpt-sovits"))]
 #[allow(clippy::result_large_err)]
 fn parse_tts_request(body: &[u8]) -> Result<(String, String, f32), Response> {
     if body.is_empty() {
@@ -154,7 +151,7 @@ fn parse_tts_request(body: &[u8]) -> Result<(String, String, f32), Response> {
     Ok((text, voice, speed))
 }
 
-#[cfg(any(feature = "sherpa", feature = "gpt-sovits"))]
+#[cfg(any(feature = "sherpa-tts", feature = "gpt-sovits"))]
 pub async fn handle_tts(body: Bytes) -> Response {
     let (text, voice, speed) = match parse_tts_request(&body) {
         Ok(parsed) => parsed,
@@ -208,7 +205,7 @@ pub async fn handle_tts(body: Bytes) -> Response {
         };
     }
 
-    #[cfg(not(feature = "sherpa"))]
+    #[cfg(not(feature = "sherpa-tts"))]
     {
         return error_json(
             StatusCode::BAD_REQUEST,
@@ -219,7 +216,7 @@ pub async fn handle_tts(body: Bytes) -> Response {
         );
     }
 
-    #[cfg(feature = "sherpa")]
+    #[cfg(feature = "sherpa-tts")]
     let Some(model) = guard.instance.tts_model() else {
         return error_json(
             StatusCode::BAD_REQUEST,
@@ -229,7 +226,7 @@ pub async fn handle_tts(body: Bytes) -> Response {
             ),
         );
     };
-    #[cfg(feature = "sherpa")]
+    #[cfg(feature = "sherpa-tts")]
     match tokio::task::block_in_place(|| model.synthesize_wav(&text, &voice, speed)) {
         Ok(wav) => {
             tracing::info!(
@@ -259,7 +256,7 @@ pub async fn handle_tts(body: Bytes) -> Response {
 /// - **GPT-SoVITS**：按标点切片，逐片合成，粒度是句。
 ///
 /// 两者都在 `block_in_place` 里跑（推理是阻塞的），每块通过 channel 推给响应流。
-#[cfg(any(feature = "sherpa", feature = "gpt-sovits"))]
+#[cfg(any(feature = "sherpa-tts", feature = "gpt-sovits"))]
 pub async fn handle_tts_stream(body: Bytes) -> Response {
     let (text, voice, speed) = match parse_tts_request(&body) {
         Ok(parsed) => parsed,
@@ -273,14 +270,9 @@ pub async fn handle_tts_stream(body: Bytes) -> Response {
     // 先读一把采样率：响应头必须在 body 开始流动之前定下来。
     let sample_rate = {
         let guard = model_ref.read().await;
-        #[cfg(feature = "sherpa")]
-        if let Some(model) = guard.instance.tts_model() {
-            model.sample_rate()
-        } else {
-            #[cfg(feature = "gpt-sovits")]
-            if let Some(model) = guard.instance.gpt_sovits_model() {
-                model.sample_rate() as i32
-            } else {
+        match tts_sample_rate(&guard.instance) {
+            Some(rate) => rate,
+            None => {
                 return error_json(
                     StatusCode::NOT_FOUND,
                     format!(
@@ -289,37 +281,6 @@ pub async fn handle_tts_stream(body: Bytes) -> Response {
                     ),
                 );
             }
-            #[cfg(not(feature = "gpt-sovits"))]
-            return error_json(
-                StatusCode::NOT_FOUND,
-                format!(
-                    "当前模型 {} 不支持流式合成",
-                    guard.which_model.as_string()
-                ),
-            );
-        }
-        #[cfg(not(feature = "sherpa"))]
-        {
-            #[cfg(feature = "gpt-sovits")]
-            if let Some(model) = guard.instance.gpt_sovits_model() {
-                model.sample_rate() as i32
-            } else {
-                return error_json(
-                    StatusCode::NOT_FOUND,
-                    format!(
-                        "当前模型 {} 不支持流式合成",
-                        guard.which_model.as_string()
-                    ),
-                );
-            }
-            #[cfg(not(feature = "gpt-sovits"))]
-            return error_json(
-                StatusCode::NOT_FOUND,
-                format!(
-                    "当前模型 {} 不支持流式合成",
-                    guard.which_model.as_string()
-                ),
-            );
         }
     };
 
@@ -328,7 +289,7 @@ pub async fn handle_tts_stream(body: Bytes) -> Response {
         // 写锁覆盖整段合成：合成器不是并发安全的。
         let guard = model_ref.write().await;
 
-        #[cfg(feature = "sherpa")]
+        #[cfg(feature = "sherpa-tts")]
         if let Some(model) = guard.instance.tts_model() {
             // Kokoro 的流式接口要求闭包 `'static`（sherpa 的 C 回调生命周期），
             // 所以这里把 tx move 进去，转换也内联。
@@ -346,6 +307,9 @@ pub async fn handle_tts_stream(body: Bytes) -> Response {
             if let Err(error) = result {
                 tracing::error!(%error, "流式合成失败");
             }
+            // 只有后面还跟着 gpt-sovits 的分支时才需要提前返回；
+            // 只编了 sherpa-tts 时这个 return 是多余的（clippy 会报）。
+            #[cfg(feature = "gpt-sovits")]
             return;
         }
         #[cfg(feature = "gpt-sovits")]
@@ -423,26 +387,44 @@ pub async fn handle_route(body: Bytes) -> Response {
     }
 }
 
+/// 解析 `/v1/decisions` 的请求体。
+///
+/// 只有 laya 后端会用到；单测也要跑（不管开没开 laya）。
+#[cfg(any(feature = "laya", test))]
 fn parse_route_body(body: &[u8]) -> Result<String, String> {
     if body.is_empty() {
         return Ok(String::new());
     }
-    let value: serde_json::Value =
+    let request: DecisionRequest =
         serde_json::from_slice(body).map_err(|_| "body 必须是 JSON {text}".to_owned())?;
-    Ok(value
-        .get("text")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .to_owned())
+    Ok(request.text)
 }
 
 // --------------------------------------------------------------------------- //
 // 小工具
 // --------------------------------------------------------------------------- //
 
-#[cfg(feature = "sherpa")]
+#[cfg(feature = "sherpa-asr")]
 fn fail(status: StatusCode, message: impl Into<String>) -> Response {
     error_json(status, message)
+}
+
+/// TTS 模型的采样率（响应头用）。两个 TTS 后端都不在就是 `None`。
+///
+/// 原来这段是两层嵌套的 `#[cfg]` if-else（开哪几个 feature 走哪条分支），
+/// 每加一个 TTS 后端就要再嵌一层。抽成一个函数，feature 只在函数体内分歧。
+#[cfg(any(feature = "sherpa-tts", feature = "gpt-sovits"))]
+fn tts_sample_rate(instance: &aha::models::ModelInstance<'_>) -> Option<i32> {
+    #[cfg(feature = "sherpa-tts")]
+    if let Some(model) = instance.tts_model() {
+        return Some(model.sample_rate());
+    }
+    #[cfg(feature = "gpt-sovits")]
+    if let Some(model) = instance.gpt_sovits_model() {
+        return Some(model.sample_rate() as i32);
+    }
+    let _ = instance;
+    None
 }
 
 /// 桌宠契约用的错误包：`{"error":"..."}`（顶层字符串，见文件头注释）。

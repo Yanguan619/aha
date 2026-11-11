@@ -105,8 +105,9 @@ ZhipuAI/GLM-OCR                          ZhipuAI              ocr          ✔
 | **SenseVoice** (sherpa-onnx) | 234M | Chinese/English/Japanese/Korean/Cantonese | csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17 | [Apache 2.0](https://huggingface.co/datasets/choosealicense/licenses/blob/main/markdown/apache-2.0.md) |
 
 > SenseVoice runs on sherpa-onnx (ONNX Runtime) instead of candle, so it requires
-> building with `--features sherpa`. Its weights are not hosted on ModelScope —
-> pass a local directory via `--weight-path`.
+> building with `--features sherpa-asr` (use `--features sherpa` for both sherpa
+> backends). Its weights are not hosted on ModelScope — pass a local directory via
+> `--weight-path`.
 
 ## Audio Generation
 
@@ -114,6 +115,10 @@ ZhipuAI/GLM-OCR                          ZhipuAI              ocr          ✔
 |-------|-----------|---------|---------|
 | **VoxCPM** | 1<br>1.5<br>2 | OpenBMB/VoxCPM-0.5B <br> OpenBMB/VoxCPM1.5 <br> OpenBMB/VoxCPM2 | [Apache 2.0](https://huggingface.co/datasets/choosealicense/licenses/blob/main/markdown/apache-2.0.md) |
 | **Kokoro** (sherpa-onnx) | 82M | csukuangfj/kokoro-multi-lang-v1_1 | [Apache 2.0](https://huggingface.co/datasets/choosealicense/licenses/blob/main/markdown/apache-2.0.md) |
+
+> Kokoro runs on sherpa-onnx (ONNX Runtime) instead of candle, so it requires
+> building with `--features sherpa-tts`. Its weights are not hosted on ModelScope —
+> pass a local directory via `--weight-path`.
 
 ## Image Processing
 

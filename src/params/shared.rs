@@ -1,5 +1,27 @@
 use serde::{Deserialize, Serialize};
 
+/// Error detail object, following the OpenAI API error schema.
+///
+/// 只在 bin 的 HTTP 层构造；lib 构建里没人用，所以放开 dead_code。
+#[allow(dead_code)]
+#[derive(Debug, Serialize)]
+pub(crate) struct ApiErrorDetail {
+    pub(crate) message: String,
+    #[serde(rename = "type")]
+    pub(crate) error_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) param: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) code: Option<String>,
+}
+
+/// Top-level error envelope（所有端点共用）。
+#[allow(dead_code)]
+#[derive(Debug, Serialize)]
+pub(crate) struct ApiErrorBody {
+    pub(crate) error: ApiErrorDetail,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Usage {
     /// Number of tokens in the prompt.

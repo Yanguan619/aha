@@ -60,10 +60,11 @@ rand = "0.10.1"
 esaxx-rs = "0.1.10"
 # 日志宏（sherpa 模型下载进度 / 桌宠端点）；没装 subscriber 时是 no-op。
 tracing = "0.1"
-# Optional: sherpa-onnx (SenseVoice ASR / Kokoro TTS). Enable with `--features sherpa`.
-# 注意必须是 **shared**（动态链接）：sherpa 静态库里内嵌了 protobuf，而 aha 又依赖
-# sentencepiece（也内嵌 protobuf），两个静态库合进一个 exe 会 LNK2005 重复符号。
-# 代价是发行包里 aha.exe 旁边要带 sherpa-onnx 的 DLL（build-release.ps1 会拷）。
+# sherpa-onnx（ONNX Runtime 绑定）：SenseVoice ASR / Kokoro TTS。
+#
+# **不要直接往这里加**——依赖本身由 `onnx-runtime` feature 打开（见 [features]）：
+# 这个 crate 的 default 是 `static`，静态链接会把内嵌的 protobuf 和 sentencepiece
+# 那份一起塞进 exe，Windows 上直接 LNK2005 重复符号。必须走 `shared`。
 sherpa-onnx = { version = "2.0.1", optional = true, default-features = false }
 # Optional: Laya decision model (sys1 / candle), served by the `route` endpoint.
 sys1 = { version = "0.0.3", optional = true, default-features = false, features = ["cpu"] }
@@ -81,7 +82,19 @@ flash-attn = ["candle-flash-attn"]
 cuda = ["candle-nn/cuda", "candle-core/cuda", "candle-transformers/cuda"]
 metal = ["candle-nn/metal", "candle-core/metal", "candle-transformers/metal"]
 ffmpeg = ["ffmpeg-next"]
-sherpa = ["dep:sherpa-onnx", "sherpa-onnx/shared"]
+
+# ---- sherpa-onnx 后端（三层：运行时 / ASR / TTS） -----------------------------
+#
+# 拆开是因为这三件事是正交的：
+#   - `onnx-runtime` 只管**依赖和链接方式**（强制 shared，见上面 sherpa-onnx 的注释）；
+#   - `sherpa-asr` / `sherpa-tts` 各自只加一个模型，互不牵连。
+#
+# 只想要语音识别就别开 `sherpa-tts`——不用平白带上 Kokoro 的 331 行和 103 个音色表。
+# `sherpa` 保留成两者之和，兼容已有构建命令（scripts/build-release.ps1 用的就是它）。
+onnx-runtime = ["dep:sherpa-onnx", "sherpa-onnx/shared"]
+sherpa-asr = ["onnx-runtime"]
+sherpa-tts = ["onnx-runtime"]
+sherpa = ["sherpa-asr", "sherpa-tts"]
 # Laya 决策模型：CPU 是默认编译特征；要 GPU 用 laya-cuda（sys1 的 cuda 是三选一互斥的）。
 laya = ["dep:sys1"]
 laya-cuda = ["dep:sys1", "sys1/cuda", "cuda"]

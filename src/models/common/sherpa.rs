@@ -26,12 +26,16 @@ struct SherpaSpec {
     skip_prefixes: &'static [&'static str],
 }
 
+// 两个 spec 各自跟着自己的模型 feature 走：只编了 sherpa-asr 时不需要 Kokoro 的
+// 仓库/文件清单。
+#[cfg(feature = "sherpa-asr")]
 const SENSE_VOICE: SherpaSpec = SherpaSpec {
     repo: "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17",
     required: &["model.int8.onnx", "tokens.txt"],
     skip_prefixes: &[],
 };
 
+#[cfg(feature = "sherpa-tts")]
 const KOKORO: SherpaSpec = SherpaSpec {
     repo: "csukuangfj/kokoro-multi-lang-v1_1",
     required: &[
@@ -68,9 +72,9 @@ pub fn ensure_downloaded(
     model: crate::models::common::model_mapping::WhichModel,
 ) -> Result<()> {
     let spec = match model {
-        #[cfg(feature = "sherpa")]
+        #[cfg(feature = "sherpa-asr")]
         crate::models::common::model_mapping::WhichModel::SenseVoice => SENSE_VOICE,
-        #[cfg(feature = "sherpa")]
+        #[cfg(feature = "sherpa-tts")]
         crate::models::common::model_mapping::WhichModel::Kokoro => KOKORO,
         _ => bail!("不是 sherpa 模型，没有可下载的文件列表"),
     };
