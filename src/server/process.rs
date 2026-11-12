@@ -126,10 +126,26 @@ pub fn watch_parent(pid: u32) {
             }
         });
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
+    {
+        // kill(pid, 0) 只做权限/存在性检查，不真发信号：返回 0 = 还在，ESRCH = 已经没了。
+        // Android 上父进程被杀后由 init 立刻回收，所以被僵尸期很长的情况不存在；
+        // shortcut: PID 被复用时看门狗会误认为父进程还活着，续跑到下次重启。
+        std::thread::spawn(move || {
+            let pid = pid as i32;
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                if unsafe { libc::kill(pid, 0) } != 0 {
+                    eprintln!("[watchdog] 父进程已退出，跟着收工");
+                    std::process::exit(0);
+                }
+            }
+        });
+    }
+    #[cfg(all(not(windows), not(unix)))]
     {
         let _ = pid;
-        eprintln!("[watchdog] 非 Windows 平台没有父进程看门狗");
+        eprintln!("[watchdog] 这个平台没有父进程看门狗");
     }
 }
 

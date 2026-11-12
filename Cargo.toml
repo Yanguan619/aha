@@ -76,6 +76,10 @@ jieba-rs = { version = "0.11", optional = true, default-features = false }
 # --parent-pid watchdog: 桌宠退出时跟着收工（移植自旧 asr/tts/laya-route）。
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
+# Linux / Android 的父进程看门狗只需要 kill(2)；libc 本来就在依赖树里（transitive）。
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 
 [features]
 flash-attn = ["candle-flash-attn"]

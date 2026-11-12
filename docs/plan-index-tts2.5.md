@@ -137,14 +137,24 @@ index_tts_text_tokenizer ok 58836 个 rank + 1673 个特殊 token，7 组用例�
    * 预切分正则原样实现，没有引入 regex 依赖，用 `char::is_alphabetic/is_numeric/is_whitespace`；
    * 词表里有一行是 `= 48474`（Python `b64decode("=")` → 空串），这里同样按空串处理；
    * 已用 Python tiktoken + 同一份词表生成参考值，7 组用例逐 id 对上（含特殊 token / 中文 / 英文缩写）。
-5. **前端（音频部分，待做）**：
-   * 16k 重采样 → w2v-bert：SeamlessM4T 特征提取（80 mel / n_fft 400 / hop 160 → stride 2 拼成 160 维），
-     再过 `wavvec2bert_stats`(mean/var, 1024 维) 归一化；
-   * 16k → `torchaudio.compliance.kaldi.fbank(num_mel_bins=80, dither=0)` 并**减去时间维均值** → campplus；
-   * 22.05k → `mel_spectrogram`（librosa slaney mel、hann 1024/256、`center=False`、先 reflect pad 384、
-     `log(clamp(1e-5))`）作为 `ref_mel`；
-   * 参考音频要截断到 15s，且同一段音频要用两种采样率各跑一次。
+5. ~~前端（音频部分）~~ ✅ `src/models/index_tts/frontend.rs`（已接进 `synthesize_profiled`）：
+   * `seamless_features`：Kaldi fbank（400/160/512、povey、preemph 0.97、80 bins）
+     → 每个 bin 沿时间归一化 → stride 2 拼成 160 维，喂 w2v-bert；
+   * `campplus_fbank`：同一套 Kaldi fbank 但沿时间维减均值，喂 campplus；
+   * `mel_spectrogram_22050`：librosa slaney mel、hann 1024/256、`center=False`、
+     reflect pad 384、`log(clamp(1e-5))`，作为 s2mel 的 `ref_mel`；
+   * `load_wav` / `resample`（自带 radix-2 FFT 与加窗 sinc 重采样，不依赖外部 crate）；
+   * 参考音频截断到 15s，同一段音频按 16k / 22.05k 各转一次。
 6. **性能**：debug 构建下 8 个 code + 2 步 CFM + bigvgan 端到端约 97s（含模型加载），必须走 release/GPU。
+7. **还没做：暴露成 `/v1/tts` 后端**。现在 `pipeline` 端到端能跑了（只有集成测试能碰到），
+   但服务层完全不认它，四处都得加：
+   * `WhichModel` 里没有 IndexTTS 变体（`src/models/common/model_mapping.rs`），所以 CLI/HTTP 加载不了；
+   * `ModelInstance` 没有对应变体，`src/models/mod.rs` 的加载分派缺一个 arm；
+   * `src/server/deskpet.rs` 的 `handle_tts` / `handle_tts_stream` 只有 GPT-SoVITS 和 Kokoro 两条路；
+   * 契约要对齐：`TtsRequest` 只有 `text/voice/speed`，IndexTTS 还需要**参考音频**（音色克隆）
+     和 `.tiktoken` 词表路径——最自然的做法是照 GPT-SoVITS 的 `voices.json`：
+     `voice` 当配置名，配置里写 ref_wav；输出采样率也要确认（bigvgan 出口不是 24k）。
+
 
 ## 6. GPU（推荐）与当前阻塞点
 

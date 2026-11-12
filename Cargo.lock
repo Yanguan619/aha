@@ -62,6 +62,7 @@ dependencies = [
  "image",
  "jieba-rs",
  "kaldi-native-fbank",
+ "libc",
  "minijinja",
  "num",
  "rand 0.10.3",
