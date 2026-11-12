@@ -461,12 +461,10 @@ impl IndexTtsPipeline {
         let ids = Tensor::from_vec(ids, (1, text_len), device)?;
         let text_emb = self.gpt.embed_text_with_lang(&ids, lang_id)?; // (1,L,dim)
 
-        let cond_len = conds.dim(1)?;
-        let prefix_len = cond_len + text_len;
         let prefix = Tensor::cat(&[conds, &text_emb], 1)?;
         let start = Tensor::from_vec(vec![self.config.start_mel_token as u32], (1, 1), device)?;
         // 注意：mel 位置编码是「相对 mel 段」的（上游 start token 用 0，之后 1,2,...），
-        // 不是整条序列的绝对位置，这里用 prefix_len 会整体偏移，音色和音质都会坏。
+        // 不是整条序列的绝对位置，用 conds+text 的绝对长度会整体偏移，音色和音质都会坏。
         let start_emb = self.gpt.embed_mel(&start, 0)?;
         let embeds = Tensor::cat(&[&prefix, &start_emb], 1)?;
 

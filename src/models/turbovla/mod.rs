@@ -487,7 +487,7 @@ impl TurboVlaModel {
     fn text_features(&self, instruction: &str, group_len: usize, pad_len: usize) -> Result<TextFeat> {
         let key = (instruction.to_string(), group_len);
         {
-            let mut cache = self.text_cache.lock().unwrap();
+            let cache = self.text_cache.lock().unwrap();
             if let Some(hit) = cache.get(&key) {
                 let feat = hit.clone();
                 // 刷新访问序：把它挪到队尾。

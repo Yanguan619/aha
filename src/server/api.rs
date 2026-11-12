@@ -17,7 +17,6 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use futures_util::{Stream, StreamExt};
-use serde::Serialize;
 use std::net::SocketAddr;
 use tokio::sync::RwLock;
 
@@ -65,12 +64,6 @@ pub struct InitOptions {
     pub request_timeout_ms: u64,
     /// sherpa-onnx 的推理线程数；0 = 按 CPU 自动。
     pub threads: i32,
-    /// 关掉启动预热（默认开）。
-    ///
-    /// 预热会在端口开之前空跑一遍每个角色，把「首次推理的一次性开销」提前。
-    /// 代价是启动慢一点（每个角色几秒）。如果不需要这个延迟收益
-    /// （比如调试、或者模型在别的机器上跑），可以关掉。
-    pub no_warmup: bool,
 }
 
 /// 默认推理线程数（sherpa-onnx / onnxruntime 的 intra-op 线程）。

@@ -148,7 +148,6 @@ pub(crate) async fn run_cli(args: CliArgs) -> anyhow::Result<()> {
             min_confidence: pet.min_confidence,
             request_timeout_ms: pet.request_timeout_ms,
             threads: pet.threads,
-            no_warmup: pet.no_warmup,
         },
     )?;
     // 预热：把首个请求的一次性开销挪到端口开之前。
@@ -224,7 +223,6 @@ pub(crate) async fn run_serv(args: ServArgs) -> anyhow::Result<()> {
             min_confidence: pet.min_confidence,
             request_timeout_ms: pet.request_timeout_ms,
             threads: pet.threads,
-            no_warmup: pet.no_warmup,
         },
     )?;
     // 预热：把首个请求的一次性开销挪到端口开之前。
@@ -324,7 +322,6 @@ pub(crate) async fn run_multi(args: MultiArgs) -> anyhow::Result<()> {
             min_confidence: pet.min_confidence,
             request_timeout_ms: pet.request_timeout_ms,
             threads: pet.threads,
-            no_warmup: pet.no_warmup,
         },
     )?;
     // 预热：把首个请求的一次性开销挪到端口开之前。

@@ -14,7 +14,6 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use serde::Serialize;
 
 use crate::params::shared::{ApiErrorBody, ApiErrorDetail};
 

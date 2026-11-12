@@ -256,7 +256,7 @@ impl TextBatch {
         let b = items.len();
         let mut ids = vec![0u32; b * full_len];
         let mut pos = vec![0u32; b * full_len];
-        let mut typ = vec![0u32; b * full_len];
+        let typ = vec![0u32; b * full_len];
         let mut am = vec![0u32; b * full_len];
         let mut pads = vec![1u8; b * full_len];
         // 组内块从 items 拷过来，组外保持单位阵

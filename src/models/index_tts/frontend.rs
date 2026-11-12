@@ -173,10 +173,6 @@ fn hz_to_mel_kaldi(f: f64) -> f64 {
     1127.0 * (1.0 + f / 700.0).ln()
 }
 
-fn mel_to_hz_kaldi(m: f64) -> f64 {
-    700.0 * (m / 1127.0).exp_m1()
-}
-
 /// Kaldi 风格三角滤波器（在 mel 域上做三角），返回 (num_bins, fft/2+1)
 fn kaldi_mel_bank(
     sr: usize,

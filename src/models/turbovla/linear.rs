@@ -20,7 +20,7 @@ use candle_core::cuda_backend::cudarc::cublaslt::{CudaBlasLT, Matmul, MatmulConf
 #[cfg(feature = "cuda")]
 use candle_core::cuda_backend::cudarc::driver::CudaStream;
 #[cfg(feature = "cuda")]
-use candle_core::cuda_backend::{CudaStorage, WrapErr};
+use candle_core::cuda_backend::CudaStorage;
 #[allow(unused_imports)]
 use candle_core::{CpuStorage, CustomOp3, DType, Layout, Module, Result, Shape, Tensor};
 #[cfg(feature = "cuda")]

@@ -10,7 +10,7 @@
 //! pipe.s2mel = s2mel; // 替换
 //! ```
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use candle_core::{DType, Device};
 use candle_nn::VarBuilder;
 
