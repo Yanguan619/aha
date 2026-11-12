@@ -1,0 +1,23 @@
+# 统一行尾：仓库一律存 LF，工作区也落 LF。
+# 之前有编辑器把十几个 .rs 改成 CRLF，`git status` 出现整文件 diff，
+# 必须靠 `git diff --ignore-cr-at-eol` 才看得出真实改动。
+* text=auto eol=lf
+
+# 二进制：不做行尾转换
+*.gguf binary
+*.onnx binary
+*.safetensors binary
+*.bin binary
+*.wav binary
+*.mp3 binary
+*.png binary
+*.jpg binary
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.zip binary
+
+# cmd.exe 对纯 LF 的批处理容错差
+*.bat text eol=crlf
+*.cmd text eol=crlf
