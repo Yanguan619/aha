@@ -5,5 +5,6 @@ pub mod params;
 pub mod position_embed;
 pub mod tokenizer;
 pub mod utils;
+pub mod stream;
 
 pub use candle_core::{DType, Device, Tensor};

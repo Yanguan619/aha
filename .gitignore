@@ -31,3 +31,6 @@ progress.md
 task_plan.md
 
 __pycache__/
+
+# llama.cpp 预编译静态库（每个 ABI 约 100 MB，用 scripts 现生成，不入库）
+/llama-prebuilt/

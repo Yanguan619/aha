@@ -99,6 +99,8 @@ onnx-runtime = ["dep:sherpa-onnx", "sherpa-onnx/shared"]
 sherpa-asr = ["onnx-runtime"]
 sherpa-tts = ["onnx-runtime"]
 sherpa = ["sherpa-asr", "sherpa-tts"]
+# llama.cpp 后端（llama-prebuilt/<abi>/ 里的静态库）；只影响生成路径，不影响依赖。
+llama = []
 # Laya 决策模型：CPU 是默认编译特征；要 GPU 用 laya-cuda（sys1 的 cuda 是三选一互斥的）。
 laya = ["dep:sys1"]
 laya-cuda = ["dep:sys1", "sys1/cuda", "cuda"]

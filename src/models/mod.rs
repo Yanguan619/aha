@@ -41,6 +41,10 @@ pub mod w2v_bert_2_0;
 pub mod turbovla;
 // pub mod sam3;
 pub mod fire_red_vad;
+
+/// llama.cpp 后端：把生成交给 llama.cpp，能跑 candle 不支持的新架构/新量化（如 STQ）。
+#[cfg(feature = "llama")]
+pub mod llama_cpp;
 pub mod gpt2;
 pub mod llama;
 
