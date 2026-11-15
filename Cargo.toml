@@ -134,3 +134,10 @@ required-features = ["vla"]
 name = "turbovla_bench"
 required-features = ["vla"]
 
+
+# aha-ffi is the C ABI package (cdylib + staticlib) of this workspace. It is a separate
+# package on purpose: aha has many [[bin]] targets, so giving *this* crate a cdylib would make
+# every cargo build link an extra 20+ MB .so that most consumers never need. Build it with
+# cargo build -p aha-ffi instead.
+[workspace]
+members = ["aha-ffi"]

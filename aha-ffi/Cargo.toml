@@ -1,0 +1,25 @@
+[package]
+name = "aha-ffi"
+version = "0.1.0"
+edition = "2024"
+description = "C ABI for embedding the aha inference engine in other runtimes (JNI, Swift, Python ctypes, Unity, ...)"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+name = "aha_ffi"
+# `cdylib` for "load the .so and call it", `staticlib` for linking into an existing binary,
+# `rlib` so the crate itself can be `cargo test`-ed.
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+aha = { path = ".." }
+anyhow = "1.0.100"
+base64 = "0.22.1"
+clap = { version = "4.5.51", features = ["derive"] }
+serde_json = "1.0.145"
+
+[features]
+default = []
+# Forward the llama.cpp backend: needs `llama-prebuilt/<abi>/` to be present (see build.rs).
+llama = ["aha/llama"]
