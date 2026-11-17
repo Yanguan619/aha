@@ -17,7 +17,10 @@ use std::path::Path;
 
 use anyhow::Result;
 use candle_core::{DType, Device, Tensor};
-use candle_nn::{BatchNorm, Conv2d, Conv2dConfig, Module, ModuleT, VarBuilder, batch_norm, conv2d, conv2d_no_bias};
+use candle_nn::{
+    BatchNorm, Conv2d, Conv2dConfig, Module, ModuleT, VarBuilder, batch_norm, conv2d,
+    conv2d_no_bias,
+};
 
 const BASE_WIDTH: usize = 24;
 const SCALE: usize = 4;
@@ -101,7 +104,13 @@ impl Block {
         let mut convs = Vec::with_capacity(SCALE);
         let mut bns = Vec::with_capacity(SCALE);
         for i in 0..SCALE {
-            convs.push(conv2d_no_bias(width, width, 3, k3, vb.pp(format!("convs.{}", i)))?);
+            convs.push(conv2d_no_bias(
+                width,
+                width,
+                3,
+                k3,
+                vb.pp(format!("convs.{}", i)),
+            )?);
             bns.push(batch_norm(width, 1e-5, vb.pp(format!("bns.{}", i)))?);
         }
         let mut fuse = Vec::new();
@@ -126,7 +135,13 @@ impl Block {
             convs,
             bns,
             fuse,
-            conv3: conv2d_no_bias(width * SCALE, planes * EXPANSION, 1, Conv2dConfig::default(), vb.pp("conv3"))?,
+            conv3: conv2d_no_bias(
+                width * SCALE,
+                planes * EXPANSION,
+                1,
+                Conv2dConfig::default(),
+                vb.pp("conv3"),
+            )?,
             bn3: batch_norm(planes * EXPANSION, 1e-5, vb.pp("bn3"))?,
             shortcut,
             width,
@@ -163,7 +178,9 @@ impl Block {
                 Some(prev) => Tensor::cat(&[&prev, &piece], 1)?,
             });
         }
-        let mut out = self.bn3.forward_t(&self.conv3.forward(&acc.expect("scale>=1"))?, false)?;
+        let mut out = self
+            .bn3
+            .forward_t(&self.conv3.forward(&acc.expect("scale>=1"))?, false)?;
 
         if let Some((conv, bn)) = &self.shortcut {
             let residual = bn.forward_t(&conv.forward(x)?, false)?;
@@ -206,7 +223,8 @@ pub struct ERes2NetV2 {
 
 impl ERes2NetV2 {
     pub fn load(dir: impl AsRef<Path>, device: &Device, dtype: DType) -> Result<Self> {
-        let tensors = candle_core::safetensors::load(dir.as_ref().join("sv_eres2net.safetensors"), device)?;
+        let tensors =
+            candle_core::safetensors::load(dir.as_ref().join("sv_eres2net.safetensors"), device)?;
         let vb = VarBuilder::from_tensors(tensors, dtype, device);
 
         let cfg3 = Conv2dConfig {
@@ -406,7 +424,9 @@ pub fn sv_fbank(audio_16k: &[f32]) -> Result<Vec<Vec<f32>>> {
             im[i] = 0.0;
         }
         fft_inplace(&mut re, &mut im);
-        let power: Vec<f32> = (0..FFT / 2 + 1).map(|i| re[i] * re[i] + im[i] * im[i]).collect();
+        let power: Vec<f32> = (0..FFT / 2 + 1)
+            .map(|i| re[i] * re[i] + im[i] * im[i])
+            .collect();
         let mut fb = Vec::with_capacity(80);
         for b in bank.iter() {
             let e: f32 = b.iter().zip(power.iter()).map(|(w, p)| w * p).sum();

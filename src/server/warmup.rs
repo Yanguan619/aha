@@ -111,8 +111,32 @@ fn dispatch(role: &str, model_ref: &SharedModel) -> anyhow::Result<()> {
         "tts" => warmup_tts(model_ref),
         "system1" => warmup_system1(model_ref),
         "vla" => warmup_vla(model_ref),
+        "llm" => warmup_chat(model_ref),
         _ => Ok(()),
     }
+}
+
+/// 对话（LLM）预热：用最短的一句话跑一次生成。
+///
+/// 首个轮次要额外付：CUDA 上下文与 kernel 自动调优、KV cache 分配、
+/// tokenizer 与 chat template 的首次展开。这些都是一次性的，但都卡在
+/// **首音延迟**的第一段上，所以值得在端口开之前付掉。
+fn warmup_chat(model_ref: &SharedModel) -> anyhow::Result<()> {
+    use aha::models::GenerateModel;
+    use aha::params::chat::ChatCompletionParameters;
+
+    // 用 json! 拼请求：`ChatCompletionParameters` 有三十多个可选字段，
+    // 手写结构体字面量既啰嗦又容易跟上游字段漂移。
+    let payload = serde_json::json!({
+        "model": "warmup",
+        "messages": [{ "role": "user", "content": "你好" }],
+        "max_completion_tokens": 4,
+        "stream": false,
+    });
+    let params: ChatCompletionParameters = serde_json::from_value(payload)?;
+    let mut guard = model_ref.blocking_write();
+    let _ = guard.instance.generate(params);
+    Ok(())
 }
 
 /// ASR 预热：喂 0.5 秒静音，跑一次完整识别。
@@ -194,9 +218,7 @@ fn warmup_system1(model_ref: &SharedModel) -> anyhow::Result<()> {
         // 一句肯定会被 keyword 命中的短文本：只触发 warmup，不进模型推理。
         // （keyword 命中的路径不跑神经网络，正好把 warmup 的开销留下。）
         let fut = model.route("你好");
-        let _ = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(fut)
-        });
+        let _ = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut));
     }
     #[cfg(not(feature = "laya"))]
     {

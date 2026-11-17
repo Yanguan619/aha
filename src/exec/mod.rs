@@ -15,6 +15,8 @@ pub mod hunyuan_ocr;
 pub mod kokoro;
 pub mod lfm2;
 pub mod lfm2vl;
+#[cfg(feature = "llama")]
+pub mod llama_cpp;
 pub mod minicpm4;
 pub mod minicpm5;
 pub mod paddleocr_vl;

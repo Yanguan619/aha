@@ -57,11 +57,7 @@ fn is_numeric_char(c: char) -> bool {
 }
 
 impl ToneSandhi {
-    pub fn new(
-        must_neural: Vec<String>,
-        must_not_neural: Vec<String>,
-        punc: Vec<String>,
-    ) -> Self {
+    pub fn new(must_neural: Vec<String>, must_not_neural: Vec<String>, punc: Vec<String>) -> Self {
         Self {
             must_neural: must_neural.into_iter().collect(),
             must_not_neural: must_not_neural.into_iter().collect(),
@@ -256,7 +252,12 @@ impl ToneSandhi {
     fn yi_sandhi(&self, word: &str, mut finals: Vec<String>) -> Vec<String> {
         let chars: Vec<char> = word.chars().collect();
         let has_yi = word.contains('一');
-        if has_yi && chars.iter().filter(|c| **c != '一').all(|c| is_numeric_char(*c)) {
+        if has_yi
+            && chars
+                .iter()
+                .filter(|c| **c != '一')
+                .all(|c| is_numeric_char(*c))
+        {
             return finals;
         }
         if chars.len() == 3 && chars[1] == '一' && chars[0] == chars[2] {
@@ -291,10 +292,7 @@ impl ToneSandhi {
 
         // 叠词：奶奶 / 试试 / 旺旺
         for j in 1..chars.len() {
-            if chars[j] == chars[j - 1]
-                && matches!(pos_first, 'n' | 'v' | 'a')
-                && !must_not
-            {
+            if chars[j] == chars[j - 1] && matches!(pos_first, 'n' | 'v' | 'a') && !must_not {
                 set_tone(&mut finals[j], '5');
             }
         }
@@ -304,9 +302,9 @@ impl ToneSandhi {
         let n = chars.len();
 
         // 以下六种情况都是把最后一个音节读轻声
-        let tail_neutral = last.is_some_and(|l| {
-            "吧呢哈啊呐噻嘛吖嗨哦哒额滴哩哟喽啰耶喔诶的地得".contains(l)
-        }) || (n == 1 && "了着过".contains(chars[0]) && matches!(pos, "ul" | "uz" | "ug"))
+        let tail_neutral = last
+            .is_some_and(|l| "吧呢哈啊呐噻嘛吖嗨哦哒额滴哩哟喽啰耶喔诶的地得".contains(l))
+            || (n == 1 && "了着过".contains(chars[0]) && matches!(pos, "ul" | "uz" | "ug"))
             || (n > 1
                 && last.is_some_and(|l| "们子".contains(l))
                 && matches!(pos_first, 'r' | 'n')
@@ -320,8 +318,7 @@ impl ToneSandhi {
 
         let ge_neutral = ge_idx.is_some_and(|g| {
             g >= 1
-                && (is_numeric_char(chars[g - 1])
-                    || "几有两半多各整每做是".contains(chars[g - 1]))
+                && (is_numeric_char(chars[g - 1]) || "几有两半多各整每做是".contains(chars[g - 1]))
         }) || word == "个";
 
         if tail_neutral {
@@ -340,7 +337,8 @@ impl ToneSandhi {
         let mut list_b: Vec<String> = finals[first_len..].to_vec();
         if !first.is_empty()
             && !list_a.is_empty()
-            && (self.must_neural.contains(&first) || self.must_neural.contains(&self.last_two(&first)))
+            && (self.must_neural.contains(&first)
+                || self.must_neural.contains(&self.last_two(&first)))
         {
             let idx = list_a.len() - 1;
             set_tone(&mut list_a[idx], '5');
@@ -357,12 +355,7 @@ impl ToneSandhi {
         list_a
     }
 
-    fn three_sandhi(
-        &self,
-        jieba: &Jieba,
-        word: &str,
-        mut finals: Vec<String>,
-    ) -> Vec<String> {
+    fn three_sandhi(&self, jieba: &Jieba, word: &str, mut finals: Vec<String>) -> Vec<String> {
         let n = char_len(word);
         if n == 2 && all_tone_three(&finals) {
             set_tone(&mut finals[0], '2');
@@ -434,7 +427,10 @@ impl ToneSandhi {
                 chars[first_chars.len().min(chars.len())..].iter().collect(),
             )
         } else {
-            (chars[..chars.len() - first_chars.len()].iter().collect(), first)
+            (
+                chars[..chars.len() - first_chars.len()].iter().collect(),
+                first,
+            )
         }
     }
 

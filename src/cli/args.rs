@@ -19,6 +19,10 @@ pub(crate) enum Commands {
     Multi(MultiArgs),
     /// 校验模型与二进制编译特征是否对得上（桌宠拉起 Laya 前先问一次）
     Probe(ProbeArgs),
+    /// 探测手机/盒子上的 NPU 运行时（QNN / NNAPI），并给出 --provider 建议
+    Npu(NpuArgs),
+    /// 直接检查/执行一个 QAIRT context binary（模型无关：图与张量都从 bin 里读）
+    Qnn(QnnArgs),
     /// List all running aha services
     Ps(ServListArgs),
     /// Delete a downloaded model from the default location (~/.aha/{model_id})
@@ -55,10 +59,27 @@ pub(crate) struct ServerCommonArgs {
 /// 桌宠三个模型的额外参数（只对 SenseVoice / Kokoro / Laya 生效，其余模型忽略）。
 #[derive(Args, Debug, Default)]
 pub(crate) struct PetServeArgs {
-    /// 推理设备：`cpu` / `cuda` / `auto`（默认 auto：编译进了 cuda 就用 GPU）。
+    /// 推理设备：`cpu` / `cuda` / `npu` / `auto`（默认 auto：编译进了 cuda 就用 GPU）。
     /// Laya 不看这个值（它由 `--features laya-cuda` 编译期决定），GPT-SoVITS 看。
+    ///
+    /// `npu` 只对 ONNX Runtime 的模型有意义（SenseVoice / Kokoro）：candle 没有
+    /// 移动端 NPU 后端，LLM/VL 用 `npu` 等于 CPU。等价于 `--provider <探测到的 NPU>`。
     #[arg(long, default_value = "auto")]
     pub device: String,
+    /// ONNX Runtime 的 execution provider（只对 SenseVoice / Kokoro 这类 sherpa 模型生效）。
+    ///
+    /// 取值：`cpu` / `cuda` / `coreml` / `trt` / `rknn` / `qnn` / `nnapi` / `openvino`，
+    /// `auto`（默认）= 看 `AHA_PROVIDER` 环境变量，都没有就用 CPU。
+    /// 手机上用 `qnn`（`--device npu` 是它的快捷方式）；`nnapi` 只在 Android 14 及更早有意义。
+    /// 预编译的 `libonnxruntime.so` 没编进对应 EP 时它会打印 fallback 再退回 CPU，
+    /// 想知道环境里到底有没有 QNN 运行时，先跑 `aha npu`。
+    ///
+    /// `plugin:<conf>` 走 ONNX Runtime 的 plugin EP（Qualcomm 的 onnxruntime-qnn 就是
+    /// 这种形式，不需要自编 ORT）：配置文件是 `key=value` 行，`library=` 指向 plugin
+    /// 的 .so，其余键原样交给 EP（如 `backend_type=htp`、`backend_path=libQnnHtp.so`、
+    /// `htp_arch=81`）。需要链接进 ORT ≥ 1.23 且带 plugin EP 支持。
+    #[arg(long)]
+    pub provider: Option<String>,
     /// Laya 低于这个置信度的 vla 判定回退 llm（默认 0.8，和 route.py 一致）。
     #[arg(long, default_value_t = 0.8)]
     pub min_confidence: f32,
@@ -68,6 +89,9 @@ pub(crate) struct PetServeArgs {
     /// 推理线程数（sherpa-onnx 的 intra-op 线程；0 = 按 CPU 自动，取逻辑核数）。
     #[arg(long, default_value_t = 0)]
     pub threads: i32,
+    /// 上下文长度（GGUF/llama.cpp 后端用；默认 4096，Hy-MT2 这类短文本翻译够用）。
+    #[arg(long, default_value_t = 4096)]
+    pub ctx_size: u32,
     /// 关掉启动预热。
     ///
     /// 预热会在端口开之前空跑一遍每个角色（ASR / TTS / 决策 / VLA），
@@ -161,6 +185,18 @@ pub(crate) struct ProbeArgs {
     pub selftest: bool,
 }
 
+/// Arguments for the 'npu' subcommand
+#[derive(Args, Debug)]
+pub(crate) struct NpuArgs {
+    /// 输出 JSON（给桌面端 / Android 壳读）
+    #[arg(long)]
+    pub json: bool,
+
+    /// 只打印建议的 provider（探测不到就打印 cpu），方便脚本里 `$(aha npu -r)`
+    #[arg(long, short)]
+    pub recommended: bool,
+}
+
 /// Arguments for the 'serv list' subcommand
 #[derive(Args, Debug)]
 pub(crate) struct ServListArgs {
@@ -216,6 +252,39 @@ pub(crate) struct DeleteArgs {
     pub model: WhichModel,
 }
 
+/// Arguments for the 'qnn' subcommand: 直接看/跑一个 QAIRT context binary。
+///
+/// 图名、张量名、类型、维度全部从 context binary 里读，所以对任何用
+/// `scripts/qnn_convert.py` 转出来的模型都成立。
+#[derive(Args, Debug)]
+pub(crate) struct QnnArgs {
+    /// context binary 路径（`--stage` 产物里的 `vitsS_ctx.bin` 之类）
+    #[arg(long, conflicts_with = "model")]
+    pub context: Option<String>,
+    /// 模型库路径（`lib<name>.so`）。float32 IO 的图在 HTP v81 上只能走这条路：
+    /// context binary 会报 `Dma execution failed on the skel side`
+    #[arg(long, conflicts_with = "context")]
+    pub model: Option<String>,
+    /// HTP 后端库；Android 上通常是绝对路径
+    #[arg(long, default_value = "libQnnHtp.so")]
+    pub backend: String,
+    /// QNN system 库（读 context binary 元数据用）
+    #[arg(long, default_value = "libQnnSystem.so")]
+    pub system: String,
+    /// 只打印图和张量，不执行
+    #[arg(long)]
+    pub info: bool,
+    /// 跑第几张图（默认 0）
+    #[arg(long, default_value_t = 0)]
+    pub graph: usize,
+    /// 输入：`名字=文件`，按张量名匹配；可重复。不给就用全零缓冲区跑通链路
+    #[arg(long = "input", value_name = "NAME=PATH")]
+    pub inputs: Vec<String>,
+    /// 把输出写到这个目录（每个张量一个 `.bin`）
+    #[arg(long)]
+    pub out_dir: Option<String>,
+}
+
 /// Arguments for the 'list' subcommand (list all supported models)
 #[derive(Args, Debug)]
 pub(crate) struct ListArgs {
@@ -240,6 +309,12 @@ pub(crate) struct MultiArgs {
     /// 本地转换的 GPT-SoVITS 目录（不下载、不走 sherpa）
     #[arg(long)]
     pub tts_model: Option<WhichModel>,
+    /// 对话模型目录（启用 LLM 角色）；/realtime 这类端到端语音接口需要它
+    #[arg(long)]
+    pub llm: Option<String>,
+    /// LLM 用哪个模型（不给则按 Qwen3-0.6B 处理）
+    #[arg(long)]
+    pub llm_model: Option<WhichModel>,
     /// 启用 Laya 决策角色（模型优先用 HF 缓存，其次下载）
     #[arg(long)]
     pub laya: bool,

@@ -70,7 +70,8 @@ pub async fn handle_actions(body: Bytes) -> Response {
             match actions
                 .squeeze(0)
                 .and_then(|t| t.to_dtype(candle_core::DType::F32))
-                .and_then(|t| t.to_vec2::<f32>()) {
+                .and_then(|t| t.to_vec2::<f32>())
+            {
                 Ok(rows) => Json(json!({
                     "actions": rows,
                     "horizon": horizon,

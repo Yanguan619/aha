@@ -38,6 +38,12 @@ pub enum WhichModel {
     Qwen3_5_9B,
     #[value(name = "qwen3.5-gguf")] // todo
     Qwen3_5Gguf,
+    /// 腾讯混元翻译模型 Hy-MT2 1.8B 的 1.25bit GGUF（STQ 量化）。
+    ///
+    /// 这个文件依赖 llama.cpp 的 STQ kernel（PR #22836），candle 侧没有对应实现，
+    /// 只能走 `--features llama` 的 llama.cpp 后端；不带该特性时加载会报错。
+    #[value(name = "hy-mt2-1.8b-1.25bit-gguf")]
+    HyMT2Gguf,
     #[value(name = "Qwen/Qwen3-ASR-0.6B")]
     Qwen3ASR0_6B,
     #[value(name = "Qwen/Qwen3-ASR-1.7B")]
@@ -131,8 +137,9 @@ impl WhichModel {
         model_id.to_lowercase().contains("onnx")
     }
 
-    /// Models served through sherpa-onnx are not hosted on ModelScope, so they
-    /// must be supplied with an explicit `--weight-path`.
+    /// Models served through sherpa-onnx 的权重在 ModelScope 上是社区镜像
+    /// （官方 `csukuangfj/...` 那边没有同名仓库），见
+    /// [`crate::models::common::sherpa`]；也可以用 `--weight-path` 指向本地目录。
     ///
     /// 只编了其中一个后端时枚举里也只有对应的变体，所以按 feature 分开写。
     #[cfg(any(feature = "sherpa-asr", feature = "sherpa-tts"))]
@@ -148,7 +155,8 @@ impl WhichModel {
         false
     }
 
-    /// Laya 决策模型由 sys1 推理，模型目录/权重不在 ModelScope 上。
+    /// Laya 决策模型由 sys1 推理，权重走 ModelScope 镜像
+    /// （`convaiinnovations/laya-multilingual`），见 [`crate::models::laya::resolve`]。
     #[cfg(feature = "laya")]
     pub fn is_laya_model(&self) -> bool {
         matches!(self, WhichModel::Laya)
@@ -211,6 +219,10 @@ impl WhichModel {
     /// the organization or user who owns the model in Hugging Face format (e.g., "Qwen" from "Qwen/Qwen3-0.6B")
     /// Returns "none" if the model ID doesn't contain a '/' separator
     pub fn model_owner(&self) -> String {
+        // GGUF 侧用的是短 id（没有 org 前缀，避免下载目录嵌套），作者在这里补上。
+        if matches!(self, WhichModel::HyMT2Gguf) {
+            return "Tencent-Hunyuan".to_string();
+        }
         let name = self.as_string();
         let names: Vec<&str> = name.split("/").collect();
         if names.len() < 2 {
@@ -230,7 +242,8 @@ impl WhichModel {
             | WhichModel::Qwen3_1_7B
             | WhichModel::Qwen3_4B
             | WhichModel::LFM2_1_2B
-            | WhichModel::LFM2_5_1_2BInstruct => "llm",
+            | WhichModel::LFM2_5_1_2BInstruct
+            | WhichModel::HyMT2Gguf => "llm",
             // VLM models
             WhichModel::Qwen2_5VL3B
             | WhichModel::Qwen2_5VL7B

@@ -29,9 +29,9 @@ use candle_core::{DType, Device, Module, Tensor};
 use candle_nn::{Embedding, Linear, VarBuilder, embedding, linear, linear_no_bias};
 use serde::Deserialize;
 
-use crate::models::common::sample::simple_sample;
 #[cfg(feature = "cuda")]
 use crate::models::common::cuda_graph::StaticTensor;
+use crate::models::common::sample::simple_sample;
 #[cfg(feature = "cuda")]
 use crate::models::gpt_sovits::ar_graph::ArGraph;
 
@@ -182,17 +182,23 @@ impl Block {
         let v = qkv.narrow(2, hidden * 2, hidden)?;
 
         let (k_cache, v_cache) = match cache {
-            Some((kc, vc)) => (
-                Tensor::cat(&[kc, &k], 1)?,
-                Tensor::cat(&[vc, &v], 1)?,
-            ),
+            Some((kc, vc)) => (Tensor::cat(&[kc, &k], 1)?, Tensor::cat(&[vc, &v], 1)?),
             None => (k, v),
         };
 
         let kv_len = k_cache.dim(1)?;
-        let q = q.reshape((b, t, self.heads, self.head_dim))?.transpose(1, 2)?.contiguous()?;
-        let k = k_cache.reshape((b, kv_len, self.heads, self.head_dim))?.transpose(1, 2)?.contiguous()?;
-        let v = v_cache.reshape((b, kv_len, self.heads, self.head_dim))?.transpose(1, 2)?.contiguous()?;
+        let q = q
+            .reshape((b, t, self.heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let k = k_cache
+            .reshape((b, kv_len, self.heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let v = v_cache
+            .reshape((b, kv_len, self.heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
 
         let mut scores = q.matmul(&k.transpose(2, 3)?.contiguous()?)?;
         scores = (scores / (self.head_dim as f64).sqrt())?;
@@ -372,13 +378,18 @@ impl Text2Semantic {
         let text = self.text_emb.forward(&ids)?;
         let bert = self.bert_proj.forward(&bert_feature.t()?.unsqueeze(0)?)?;
         let text = (&text + bert)?;
-        let text = (&text + self.sine_pe(x_len, text.dtype())?.broadcast_mul(&self.alpha_text)?)?;
+        let text = (&text
+            + self
+                .sine_pe(x_len, text.dtype())?
+                .broadcast_mul(&self.alpha_text)?)?;
 
         let (xy, mask) = if y_len > 0 {
             let pids = Tensor::from_vec(prompt_codes.to_vec(), (1, y_len), &self.device)?;
             let pemb = self.audio_emb.forward(&pids)?;
-            let prompt =
-                (&pemb + self.sine_pe(y_len, pemb.dtype())?.broadcast_mul(&self.alpha_audio)?)?;
+            let prompt = (&pemb
+                + self
+                    .sine_pe(y_len, pemb.dtype())?
+                    .broadcast_mul(&self.alpha_audio)?)?;
             let xy = Tensor::cat(&[&text, &prompt], 1)?;
             let mask = self.build_prompt_mask(x_len, y_len)?;
             (xy, Some(mask))
@@ -411,14 +422,19 @@ impl Text2Semantic {
         let text = self.text_emb.forward(&ids)?; // (1, S, D)
         let bert = self.bert_proj.forward(&bert_feature.t()?.unsqueeze(0)?)?; // (1, S, D)
         let text = (&text + bert)?;
-        let text = (&text + self.sine_pe(x_len, text.dtype())?.broadcast_mul(&self.alpha_text)?)?;
+        let text = (&text
+            + self
+                .sine_pe(x_len, text.dtype())?
+                .broadcast_mul(&self.alpha_text)?)?;
 
         // 提示音频: embedding + pe
         let (xy, mask) = if y_len > 0 {
             let pids = Tensor::from_vec(prompt_codes.to_vec(), (1, y_len), &self.device)?;
             let pemb = self.audio_emb.forward(&pids)?;
-            let prompt =
-                (&pemb + self.sine_pe(y_len, pemb.dtype())?.broadcast_mul(&self.alpha_audio)?)?;
+            let prompt = (&pemb
+                + self
+                    .sine_pe(y_len, pemb.dtype())?
+                    .broadcast_mul(&self.alpha_audio)?)?;
             let xy = Tensor::cat(&[&text, &prompt], 1)?;
             let mask = self.build_prompt_mask(x_len, y_len)?;
             (xy, Some(mask))
@@ -427,7 +443,8 @@ impl Text2Semantic {
         };
 
         // 第一遍：整段 attention
-        let mut caches: Vec<Option<(Tensor, Tensor)>> = (0..self.blocks.len()).map(|_| None).collect();
+        let mut caches: Vec<Option<(Tensor, Tensor)>> =
+            (0..self.blocks.len()).map(|_| None).collect();
         let mut hidden = xy;
         for (i, block) in self.blocks.iter().enumerate() {
             let (out, k, v) = block.forward(&hidden, None, mask.as_ref())?;
@@ -480,9 +497,7 @@ impl Text2Semantic {
 
             let stop_by_eos = argmax as usize == self.cfg.eos || sampled as usize == self.cfg.eos;
             let stopped = stop_by_eos
-                || opts
-                    .early_stop_num
-                    .is_some_and(|n| generated.len() + 1 > n)
+                || opts.early_stop_num.is_some_and(|n| generated.len() + 1 > n)
                 || idx + 1 >= opts.max_new_tokens;
 
             if !stop_by_eos {
@@ -571,7 +586,11 @@ impl Text2Semantic {
         if cache.failed {
             return Ok(None);
         }
-        if let Some(g) = cache.graphs.iter().find(|g| g.lock().unwrap().max_seq == max_seq) {
+        if let Some(g) = cache
+            .graphs
+            .iter()
+            .find(|g| g.lock().unwrap().max_seq == max_seq)
+        {
             return Ok(Some(g.clone()));
         }
         let heads = self.cfg.head;
@@ -660,9 +679,7 @@ impl Text2Semantic {
             let logits = self.predict.forward(&last.squeeze(1)?)?.squeeze(0)?;
             let (sampled, stop_by_eos) = self.pick_token(&logits, idx, &y, opts)?;
             let stopped = stop_by_eos
-                || opts
-                    .early_stop_num
-                    .is_some_and(|n| generated.len() + 1 > n)
+                || opts.early_stop_num.is_some_and(|n| generated.len() + 1 > n)
                 || idx + 1 >= opts.max_new_tokens;
             if !stop_by_eos {
                 y.push(sampled);
@@ -680,7 +697,8 @@ impl Text2Semantic {
         Ok(generated)
     }
 
-    fn build_prompt_mask(&self, x_len: usize, y_len: usize) -> Result<Tensor> {        let total = x_len + y_len;
+    fn build_prompt_mask(&self, x_len: usize, y_len: usize) -> Result<Tensor> {
+        let total = x_len + y_len;
         let mut values = vec![0f32; total * total];
         for r in 0..total {
             for c in 0..total {
@@ -694,6 +712,10 @@ impl Text2Semantic {
                 }
             }
         }
-        Ok(Tensor::from_vec(values, (1, 1, total, total), &self.device)?)
+        Ok(Tensor::from_vec(
+            values,
+            (1, 1, total, total),
+            &self.device,
+        )?)
     }
 }

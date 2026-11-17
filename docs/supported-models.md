@@ -24,6 +24,7 @@ Qwen/Qwen3.5-2B                          Qwen                 vlm
 Qwen/Qwen3.5-4B                          Qwen                 vlm                  
 Qwen/Qwen3.5-9B                          Qwen                 vlm                  
 qwen3.5-gguf                             none                 vlm                  
+hy-mt2-1.8b-1.25bit-gguf                 Tencent-Hunyuan      llm                  
 Qwen/Qwen3-ASR-0.6B                      Qwen                 asr          ✔       
 Qwen/Qwen3-ASR-1.7B                      Qwen                 asr                  
 Qwen/Qwen3-Embedding-0.6B                Qwen                 embedding    ✔       
@@ -59,6 +60,25 @@ ZhipuAI/GLM-OCR                          ZhipuAI              ocr          ✔
 | **MiniCPM5-1B** | 1B | OpenBMB/MiniCPM5-1B | [Apache 2.0](https://huggingface.co/datasets/choosealicense/licenses/blob/main/markdown/apache-2.0.md) |
 | **LFM2-1.2B** | 1.2B | LiquidAI/LFM2-1.2B | [lfm1.0](https://huggingface.co/LiquidAI/LFM2-1.2B/blob/main/LICENSE) |
 | **LFM2.5-1.2B-Instruct** | 1.2B | LiquidAI/LFM2.5-1.2B-Instruct | [lfm1.0](https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct/blob/main/LICENSE) |
+
+
+## Machine Translation
+
+| Model | Parameters | Languages | Model Id | License |
+|-------|-----------|-----------|----------|---------|
+| **Hy-MT2** | 1.8B | 33+ | hy-mt2-1.8b-1.25bit-gguf | [Apache 2.0](https://huggingface.co/datasets/choosealicense/licenses/blob/main/markdown/apache-2.0.md) |
+
+> Hy-MT2 runs on llama.cpp instead of candle: the 1.25-bit checkpoint is STQ-quantized
+> and uses a custom `hunyuan-dense` architecture. It needs a build with `--features llama`
+> plus the static libraries produced by `native/scripts/build-llama.sh arm64-v8a`
+> (`native/scripts/build-llama.ps1` on Windows). The script applies
+> `native/patches/llama-stq.patch` (llama.cpp PR #22836) and
+> `native/patches/llama-stq-legacy-id.patch`, which makes the `Q2_0` tensor type used by
+> the published file load as `STQ1_0`. Weights are pulled from the ModelScope repo
+> `Tencent-Hunyuan/Hy-MT2-1.8B-1.25bit-GGUF`; alternatively pass a local file via
+> `--gguf-path`. The model card's recommended sampling is used as the default
+> (temperature 0.7, top_p 0.6, top_k 20, repetition_penalty 1.05), and `--ctx-size`
+> defaults to 4096.
 
 
 ## Embedding
@@ -106,8 +126,9 @@ ZhipuAI/GLM-OCR                          ZhipuAI              ocr          ✔
 
 > SenseVoice runs on sherpa-onnx (ONNX Runtime) instead of candle, so it requires
 > building with `--features sherpa-asr` (use `--features sherpa` for both sherpa
-> backends). Its weights are not hosted on ModelScope — pass a local directory via
-> `--weight-path`.
+> backends). Its weights are pulled from the ModelScope mirror
+> `WEAAEW/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17`; alternatively pass a
+> local directory via `--weight-path`.
 
 ## Audio Generation
 
@@ -117,8 +138,9 @@ ZhipuAI/GLM-OCR                          ZhipuAI              ocr          ✔
 | **Kokoro** (sherpa-onnx) | 82M | csukuangfj/kokoro-multi-lang-v1_1 | [Apache 2.0](https://huggingface.co/datasets/choosealicense/licenses/blob/main/markdown/apache-2.0.md) |
 
 > Kokoro runs on sherpa-onnx (ONNX Runtime) instead of candle, so it requires
-> building with `--features sherpa-tts`. Its weights are not hosted on ModelScope —
-> pass a local directory via `--weight-path`.
+> building with `--features sherpa-tts`. Its weights are pulled from the ModelScope
+> mirror `journey0ad/kokoro-multi-lang-v1_1`; alternatively pass a local directory
+> via `--weight-path`.
 
 ## Image Processing
 
@@ -132,6 +154,19 @@ Models are sourced from:
 
 - [Hugging Face](https://huggingface.co) - Primary model hub
 - [ModelScope](https://modelscope.cn) - Chinese model hub
+
+Pet / locally converted weights are all mirrored on ModelScope and fetched automatically by
+`aha download` or on first launch:
+
+| Model | ModelScope repo |
+|-------|-----------------|
+| SenseVoice | `WEAAEW/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17` |
+| Kokoro | `journey0ad/kokoro-multi-lang-v1_1` |
+| Laya | `convaiinnovations/laya-multilingual` |
+| TurboVLA | `Yanguan/turbovla-libero` |
+| GPT-SoVITS | `Yanguan/gpt-sovits-v2pro-zh` |
+| qwen3.5-gguf | `Yanguan/qwen3.5-0.8b-gguf` (0.8B Q4_K_M + mmproj-F16) |
+| Hy-MT2 | `Tencent-Hunyuan/Hy-MT2-1.8B-1.25bit-GGUF` (1.8B 1.25bit STQ GGUF) |
 
 ## Adding New Models
 

@@ -119,6 +119,7 @@ The HTTP API layer provides REST endpoints:
 - `POST /chat/completions` - Chat and text generation
 - `POST /images/remove_background` - Image background removal
 - `POST /audio/speech` - Text-to-speech synthesis
+- `GET /realtime` - WebSocket speech-to-speech (ASR -> LLM -> TTS, OpenAI Realtime shape)
 
 ### Model Abstraction Layer
 

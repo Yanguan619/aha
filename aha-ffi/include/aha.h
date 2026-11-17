@@ -78,6 +78,43 @@ int aha_stream_push(void *handle, const uint8_t *pcm, size_t len, uint32_t sampl
 /* Flush the tail when the speaker stops. Returns 0 on success, -1 on failure. */
 int aha_stream_flush(void *handle, const AhaAsrCallbacks *callbacks, char **err);
 
+/* --------------------------------------------------------- model download ---- */
+
+/* Where the weights of `model_id` live (or will live): `<save_dir>/<model_id>`.
+ * `save_dir` may be NULL => ~/.aha, or $AHA_HOME when set (Android: set it, there is no home).
+ * Returns an owned string (free with aha_string_free), or NULL with *err set.
+ *
+ * After a successful download, pass this path to aha_model_load(). */
+char *aha_model_dir(const char *model_id, const char *save_dir, char **err);
+
+/* Progress callback: `path` is the file being written (valid only during the call),
+ * `done` / `total` are bytes for the whole job. `user` is passed back untouched. */
+typedef void (*AhaDownloadProgress)(const char *path, uint64_t done, uint64_t total, void *user);
+
+/* Downloads the weights of `model_id` from its ModelScope mirror. Blocking: call it from a
+ * worker thread, never from the UI thread.
+ *
+ *  - model_id: the `-m` id, e.g. "qwen3.5-gguf", "gpt-sovits-v2pro-zh", "OpenBMB/TurboVLA",
+ *              "csukuangfj/kokoro-multi-lang-v1_1". An id with no built-in mirror is treated
+ *              as a ModelScope repo id and downloaded whole.
+ *  - max_retries: per-file attempts, <= 0 means 1.
+ *  - on_progress: may be NULL (poll aha_model_download_done/total instead).
+ *
+ * Returns 0 on success, -1 on failure (*err set), -2 when cancelled.
+ * Safe to call again after being killed: finished files are skipped by size. */
+int aha_model_download(const char *model_id, const char *save_dir, int max_retries,
+                       AhaDownloadProgress on_progress, void *user, char **err);
+
+/* Requests cancellation of the running aha_model_download (takes effect at the next chunk).
+ * Returns immediately; the download call then returns -2. Safe from another thread. */
+void aha_model_download_cancel(void);
+
+/* Progress counters of the last aha_model_download, for polling hosts. */
+uint64_t aha_model_download_done(void);
+uint64_t aha_model_download_total(void);
+uint64_t aha_model_download_files_done(void);
+uint64_t aha_model_download_files_total(void);
+
 /* ------------------------------------------------------- llama.cpp backend ---- */
 
 /* Present only when built with `--features llama`. Runs any GGUF llama.cpp understands,

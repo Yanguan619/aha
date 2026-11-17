@@ -56,7 +56,9 @@ impl SemanticQuantizer {
         let x_norm = x.sqr()?.sum_keepdim(1)?; // (T/2, 1)
         let e_norm = self.embed.to_dtype(x.dtype())?.sqr()?.sum_keepdim(1)?.t()?; // (1, NUM_CODES)
         let dots = x.matmul(&self.embed.to_dtype(x.dtype())?.t()?.contiguous()?)?; // (T/2, NUM_CODES)
-        let dist = x_norm.broadcast_add(&e_norm)?.broadcast_sub(&(dots * 2.0)?)?;
+        let dist = x_norm
+            .broadcast_add(&e_norm)?
+            .broadcast_sub(&(dots * 2.0)?)?;
 
         let idx = dist.argmin(1)?; // (T/2,) u32
         let codes = idx.to_dtype(DType::U32)?.to_vec1::<u32>()?;

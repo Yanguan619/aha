@@ -23,6 +23,7 @@ aha [COMMAND] [OPTIONS]
 | `--onnx-path <ONNX_PATH>` | Local ONNX weight（required when using ONNX models） | - |
 | `--config-path <ONNX_PATH>` | extra config path for gguf/onnx | - |
 | `--no-warmup` | Disable startup warmup (on by default). Warmup replays each role once before the port opens, so the first real request isn't slower than the rest | off |
+| `--provider <PROVIDER>` | ONNX Runtime execution provider for SenseVoice / Kokoro: `cpu`, `qnn`, `nnapi`, `cuda`, `coreml`, `trt`, `rknn`, `openvino`, `npu` to pick whatever the probe recommends, or `plugin[:<conf>]` to load a runtime plugin EP such as Qualcomm`s QNN plugin. Silently falls back to CPU when the runtime lacks it. Falls back to `AHA_PROVIDER` when omitted. See [NPU Acceleration](./npu.md) | auto |
 | `-h, --help` | Display help information | - |
 | `-V, --version` | Display version number | - |
 
@@ -31,7 +32,8 @@ aha [COMMAND] [OPTIONS]
 ### cli - Download model and start service 
 
 Download the specified model and start an HTTP service. 
-Download only supports models in safetensors format; for GGUF/ONNX models, you must specify a local file path.
+Download the specified model (from ModelScope when no `--weight-path` is given) and start an HTTP service.
+`qwen3.5-gguf` defaults to the 0.8B Q4_K_M mirror (you can still pass `--gguf-path`); ONNX models must be local paths.
 
 **Syntax:**
 ```bash
@@ -138,8 +140,9 @@ aha run -m qwen3.5-gguf -i 提取图片中的文本 -i https://ai.bdstatic.com/f
 ### serv - Start service
 
 Start HTTP service with a model. 
-Safetensors model: The `--weight-path` is optional - if not specified, it defaults to `~/.aha/{model_id}`.
-GGUF/ONNX model: The `--gguf-path`/ `--onnx-path` must be specified
+Safetensors model: The `--weight-path` is optional - if not specified, it defaults to `~/.aha/{model_id}`
+and is downloaded from ModelScope on first use (pet/local-converted models use their own mirrors).
+`qwen3.5-gguf` without `--gguf-path` downloads the 0.8B Q4_K_M mirror; ONNX models must be local paths.
 
 **Syntax:**
 ```bash
@@ -342,6 +345,86 @@ Example:
 - `image`: Image processing models
 - `tts`： Text to speech
 
+### npu - Inspect the NPU runtime on this machine
+
+Report what this machine offers an ONNX Runtime provider: Qualcomm QNN (Hexagon HTP), NNAPI, and which execution providers the ONNX Runtime next to the binary was built with. It also says whether this particular `aha` build can use a provider at all.
+
+**Syntax:**
+```bash
+aha npu [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `-j, --json` | Output in JSON format | false |
+| `-r, --recommended` | Print only the recommended `--provider` value (`cpu` when nothing is usable) | false |
+
+**Examples:**
+
+```bash
+# Full report
+aha npu
+
+# Just the value to pass to --provider
+aha npu -r
+
+# Point the probe at a custom ONNX Runtime build
+AHA_NPU_LIB_DIR=/data/local/tmp/qnn-ort aha npu --json
+```
+
+**Output:** the report lists each runtime it found with its path, the HTP architecture parsed from `libQnnHtpV{N}Stub.so`, the execution providers embedded in the local ONNX Runtime, and notes explaining what would go wrong (missing `libQnnSystem.so`, an ONNX Runtime without the QNN EP, a dead NNAPI service).
+
+Only SenseVoice and Kokoro run through ONNX Runtime, so they are the only models `--provider` can accelerate. See [NPU Acceleration](./npu.md) for the full picture and for what has to be built by hand.
+
+### qnn - Inspect / run a QAIRT model
+
+Loads a `.bin` (produced by `scripts/qnn_convert.py --stage`, or any QAIRT context binary) or a model library `lib<name>.so` (from `qnn_convert.py --build-so`, with the weights in `<name>.bin` next to it), prints the graphs and tensors inside, and optionally runs one inference. It knows **no model specifics**: graph names, tensor names, types and shapes all come from the binary, so the same command verifies whatever you converted.
+
+**Syntax:**
+```bash
+aha qnn --context <BIN> [OPTIONS]
+aha qnn --model <libNAME.so> [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--context <BIN>` | Path to the context binary (mutually exclusive with `--model`) | — |
+| `--model <SO>` | Path to a model library (mutually exclusive with `--context`); weights live in `<name>.bin` next to it | — |
+| `--backend <LIB>` | HTP backend library | `libQnnHtp.so` |
+| `--system <LIB>` | QNN system library (metadata, `--context` only) | `libQnnSystem.so` |
+| `--info` | Print graphs/tensors, do not execute | false |
+| `--graph <N>` | Which graph to run | 0 |
+| `--input <NAME=PATH>` | Raw bytes for a named tensor, repeatable; zero-filled when omitted | — |
+| `--out-dir <DIR>` | Write each output tensor as `<name>.bin` | — |
+
+**Examples:**
+
+```bash
+# What is in this binary?
+aha qnn --context vitsS_ctx.bin --info
+
+# One real inference, outputs on disk
+aha qnn --context vitsS_ctx.bin \
+  --input codes=codes.raw --input text=text.raw \
+  --input refer=refer.raw --input sv_emb=sv_emb.raw \
+  --out-dir out
+
+# Graphs with float32 IO (say GPT-SoVITS' SoVITS decoder) go through a model library
+aha qnn --model libvitsF.so --info
+```
+
+**Automatic fallback when in-process execution is refused**: on HTP v81 some graphs (SoVITS, whose IO is float32, is one) are rejected by the DSP with `Qnn_Common_Error_General (1100)`. In that case `aha` writes the same inputs as raw files plus an `input_list.txt`, runs the SDK's own `qnn-net-run` in the artifact directory (`--model` or `--retrieve_context`), and reads `Result_0/<tensor>.raw` back into memory — so the command still succeeds (the fallback output is md5-identical to what `qnn-net-run` produces directly). This needs `qnn-net-run` next to the artifact (`scripts/qnn_convert.py --stage` ships it); `AHA_QNN_NETRUN=<path>` overrides where it looks, and `AHA_QNN_NETRUN=0` turns the fallback off so you can tell whether a failure belongs to the shim or the QNN runtime.
+
+After one refusal the same process goes straight to the fallback on later calls, and `AHA_QNN_SKIP_INPROCESS=1` skips even the first attempt (saves ~0.6 s).
+
+**Context binary or model library**: both work, but the model-library path **composes and finalises the graph in every process** — measured at **~737 s** for SoVITS — while the same graph's context binary loads in ~0.7 s and the whole chain takes **~1.8 s**. Keep the model library for conversion/inspection (`--info`, feeding inputs to check shapes) and run business traffic from a context binary (build it once with `qnn-context-binary-generator`).
+
+**Requirements:** `libaha_qnn.so` next to the `aha` executable (`scripts/build_android.py` builds and places it whenever `QNN_SDK_ROOT` is set), plus `libQnnHtp.so` / `libQnnSystem.so` on the device. Without the shim the subcommand says exactly what is missing; nothing else is affected.
+
 ## Common Use Cases
 
 ### Scenario 1: Quick start inference service
@@ -439,5 +522,6 @@ aha --version
 ## See Also
 
 - [Getting Started](./getting-started.md) - Quick start guide
+- [NPU Acceleration](./npu.md) - `--provider`, `aha npu`, and what an NPU can actually run
 - [API Documentation](./api.md) - REST API reference
 - [Supported Models](./supported-tools.md) - Available models

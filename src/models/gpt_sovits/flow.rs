@@ -144,7 +144,14 @@ impl ResidualCouplingLayer {
         let half = channels / 2;
         Ok(Self {
             pre: conv1d(half, hidden, 1, Conv1dConfig::default(), vb.pp("pre"))?,
-            enc: Wn::new(hidden, kernel, dilation_rate, n_layers, gin_channels, vb.pp("enc"))?,
+            enc: Wn::new(
+                hidden,
+                kernel,
+                dilation_rate,
+                n_layers,
+                gin_channels,
+                vb.pp("enc"),
+            )?,
             post: conv1d(hidden, half, 1, Conv1dConfig::default(), vb.pp("post"))?,
             half,
         })
@@ -214,11 +221,8 @@ impl FlowBlock {
                 // torch.flip(x, [1])
                 Flow::Flip => {
                     let c = x.dim(1)?;
-                    let idx = Tensor::from_vec(
-                        (0..c as u32).rev().collect::<Vec<_>>(),
-                        c,
-                        x.device(),
-                    )?;
+                    let idx =
+                        Tensor::from_vec((0..c as u32).rev().collect::<Vec<_>>(), c, x.device())?;
                     x.index_select(&idx, 1)?
                 }
                 Flow::Coupling(layer) => layer.reverse(&x, g)?,

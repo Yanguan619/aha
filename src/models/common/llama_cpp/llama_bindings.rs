@@ -537,7 +537,6 @@ pub struct llama_model_params {
     pub n_gpu_layers: i32,
     pub split_mode: llama_split_mode,
     pub load_mode: llama_load_mode,
-    pub lazy_mode: llama_lazy_mode,
     pub main_gpu: i32,
     pub tensor_split: *const f32,
     pub progress_callback: llama_progress_callback,
@@ -565,7 +564,6 @@ pub struct llama_context_params {
     pub n_seq_max: u32,
     pub n_rs_seq: u32,
     pub n_outputs_max: u32,
-    pub n_outputs_max_per_seq: u32,
     pub n_threads: i32,
     pub n_threads_batch: i32,
     pub ctx_type: llama_context_type,
@@ -580,12 +578,11 @@ pub struct llama_context_params {
     pub yarn_beta_fast: f32,
     pub yarn_beta_slow: f32,
     pub yarn_orig_ctx: u32,
+    pub defrag_thold: f32,
     pub cb_eval: ggml_backend_sched_eval_callback,
     pub cb_eval_user_data: *mut ::std::os::raw::c_void,
     pub type_k: ggml_type,
     pub type_v: ggml_type,
-    pub moe_cache_size: usize,
-    pub moe_cache_cpu_share: f32,
     pub abort_callback: ggml_abort_callback,
     pub abort_callback_data: *mut ::std::os::raw::c_void,
     pub embeddings: bool,
@@ -1628,7 +1625,7 @@ unsafe extern "C" {
 unsafe extern "C" {
     #[doc = " @details XTC sampler as described in https://github.com/oobabooga/text-generation-webui/pull/6335"]
     pub fn llama_sampler_init_xtc(p: f32, t: f32, min_keep: usize, seed: u32)
-        -> *mut llama_sampler;
+    -> *mut llama_sampler;
 }
 unsafe extern "C" {
     #[doc = " @details Top n sigma sampling as described in academic paper \"Top-nσ: Not All Logits Are You Need\" https://arxiv.org/pdf/2411.07641"]

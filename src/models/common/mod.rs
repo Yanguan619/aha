@@ -7,8 +7,13 @@ pub mod generate;
 pub mod gguf;
 pub mod gguf_lenient;
 pub mod gguf_var_builder;
+/// llama.cpp 后端：把生成交给 llama.cpp，能跑 candle 不支持的新架构/新量化（如 STQ）。
+#[cfg(feature = "llama")]
+pub mod llama_cpp;
 pub mod model_mapping;
 pub mod modules;
+/// QNN 运行时：加载 QAIRT context binary 跑任意静态图（垫片在 `native/qnn/`）。
+pub mod qnn;
 pub mod reranker;
 pub mod sample;
 #[cfg(any(feature = "sherpa-asr", feature = "sherpa-tts"))]

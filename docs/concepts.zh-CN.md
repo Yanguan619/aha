@@ -119,6 +119,7 @@ HTTP API 层提供 REST 端点：
 - `POST /chat/completions` - 聊天和文本生成
 - `POST /images/remove_background` - 图像背景移除
 - `POST /audio/speech` - 文本转语音合成
+- `GET /realtime` - WebSocket 实时语音对话（ASR -> LLM -> TTS，对齐 OpenAI Realtime）
 
 ### 模型抽象层
 

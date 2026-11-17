@@ -8,7 +8,6 @@ use aha::models::{GenerateModel, ModelInstance, common::model_mapping::WhichMode
 use aha::params::chat::ChatCompletionParameters;
 use aha::utils::string_to_static_str;
 use anyhow::anyhow;
-use candle_core::Device;
 use axum::{
     Json,
     body::{Body, Bytes},
@@ -16,6 +15,7 @@ use axum::{
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
+use candle_core::Device;
 use futures_util::{Stream, StreamExt};
 use std::net::SocketAddr;
 use tokio::sync::RwLock;
@@ -64,6 +64,8 @@ pub struct InitOptions {
     pub request_timeout_ms: u64,
     /// sherpa-onnx 的推理线程数；0 = 按 CPU 自动。
     pub threads: i32,
+    /// llama.cpp / GGUF 后端的上下文长度；0 = 用默认 4096。
+    pub ctx_size: u32,
 }
 
 /// 默认推理线程数（sherpa-onnx / onnxruntime 的 intra-op 线程）。
@@ -131,9 +133,22 @@ fn load_one(spec: &ModelSpec, opts: &InitOptions) -> anyhow::Result<StoredModel>
         };
         let gguf_path = string_to_static_str(gguf_path);
         let mmproj_path = spec.mmproj.clone().map(string_to_static_str);
+        let threads = if opts.threads > 0 {
+            opts.threads
+        } else {
+            default_threads()
+        };
         StoredModel {
             which_model: model_type,
-            instance: load_gguf_model(model_type, None, gguf_path, mmproj_path, None)?,
+            instance: load_gguf_model(
+                model_type,
+                None,
+                gguf_path,
+                mmproj_path,
+                None,
+                opts.ctx_size.max(256),
+                threads,
+            )?,
         }
     } else if model_type.is_onnx() && !model_type.is_pet_delegated_model() {
         // 桌宠三个模型走 sherpa/sys1，不进 onnx 门禁（SenseVoice 的 id 里就带 "onnx"）
@@ -326,7 +341,13 @@ pub async fn warmup_all(enabled: bool) {
         eprintln!("[warmup] 已关掉启动预热（--no-warmup）");
         return;
     }
-    let roles = role_models();
+    let mut roles = role_models();
+    // `role_models()` 只覆盖桌宠的四个角色；`/realtime` 用的对话模型注册在 `llm`
+    // 这个 key 下，不在里面。它的首个轮次要额外付 CUDA kernel 自动调优 + KV 分配
+    // （实测冷启动首轮 1.8 s，热态 0.55 s），所以一并预热。
+    if let Some(llm) = model_by_key("llm") {
+        roles.push(("llm", llm));
+    }
     if roles.is_empty() {
         return;
     }
@@ -523,13 +544,30 @@ pub(crate) async fn remove_background(
     }
 }
 
-pub(crate) async fn speech(
-    payload: Result<Json<ChatCompletionParameters>, JsonRejection>,
-) -> Response {
-    let req = match payload {
-        Ok(Json(req)) => req,
-        Err(rejection) => {
-            return error::from_json_rejection(rejection).into_response();
+/// `POST /audio/speech` —— 两种形状，靠请求体里有没有非空 `input` 区分。
+///
+/// - `{model,input,voice?,response_format?,speed?}`（OpenAI 形状）→ TTS 角色
+///   （Kokoro / GPT-SoVITS；`response_format=wav` 回整段 WAV、`pcm` 回 chunked 裸流）。
+///   没编 sherpa-tts / gpt-sovits 时这条形状不存在。
+/// - `{model,messages:[...]}`（chat 形状）→ `generate()`：VoxCPM 这类“把 TTS 当
+///   生成模型”的后端走这条，响应是 chat 体（音频在 content 里）。
+pub(crate) async fn speech(body: Bytes) -> Response {
+    #[cfg(any(feature = "sherpa-tts", feature = "gpt-sovits"))]
+    if let Ok(req) = serde_json::from_slice::<crate::params::speech::SpeechRequest>(&body)
+        && !req.input.trim().is_empty()
+    {
+        return crate::server::tts::speech(body).await;
+    }
+
+    let req: ChatCompletionParameters = match serde_json::from_slice(&body) {
+        Ok(req) => req,
+        Err(error) => {
+            return error::invalid_request(
+                format!("body 既不是 {{input}} 也不是 chat 请求体：{error}"),
+                None,
+                Some("invalid_body"),
+            )
+            .into_response();
         }
     };
     let response = {

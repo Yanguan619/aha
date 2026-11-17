@@ -140,7 +140,10 @@ impl MelStyleEncoder {
             let n = v.len() as f64;
             let mean = v.iter().map(|a| *a as f64).sum::<f64>() / n;
             let std = (v.iter().map(|a| (*a as f64 - mean).powi(2)).sum::<f64>() / n).sqrt();
-            eprintln!("    [ref_enc] {label:<10} dims={:?} mean={mean:+.4} std={std:.4}", x.dims());
+            eprintln!(
+                "    [ref_enc] {label:<10} dims={:?} mean={mean:+.4} std={std:.4}",
+                x.dims()
+            );
         }
         Ok(())
     }

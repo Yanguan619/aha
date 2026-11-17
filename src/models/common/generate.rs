@@ -93,6 +93,8 @@ pub fn generate_generic_text<M: InferenceModel>(
 ) -> Result<String> {
     let mut generated = Vec::new();
     let eos_ids = model.stop_token_ids();
+    // 防御性清理：调用方可能因为错误/取消提前返回，上一轮的 cache 不该带进来。
+    model.clear_cache();
     let logits = model.forward_initial(&input_ids, ctx.seqlen_offset, data)?;
     let next_token = sample_and_push(ctx, &logits, &mut generated)?;
     let mut input_ids = ctx.prepare_for_next_token(next_token)?;
@@ -123,6 +125,8 @@ pub fn generate_generic<M: InferenceModel>(
     let prompt_tokens = ctx.seq_len as u32;
     let mut generated = Vec::new();
     let eos_ids = model.stop_token_ids();
+    // 防御性清理：上一轮若中途出错，cache 里可能还留着 token。
+    model.clear_cache();
     let i_start = Instant::now();
     let logits = model.forward_initial(&input_ids, ctx.seqlen_offset, data)?;
     let next_token = sample_and_push(ctx, &logits, &mut generated)?;
@@ -185,6 +189,10 @@ pub fn generate_stream_generic_text<M: InferenceModel>(
     );
     let mut error_tokens = Vec::new();
     let eos_ids = model.stop_token_ids();
+    // 入口先清 KV cache：流被**提前 drop**（客户端取消 / 打断）时，结尾那次
+    // `clear_cache()` 根本不会执行，上一轮的 token 会留在 cache 里，下一轮
+    // mask 列数对不上 → `broadcast_add` 形状不匹配直接报错。
+    model.clear_cache();
     let stream = stream! {
         let mut input_ids = input_ids;
         let mut generated = Vec::new();
@@ -261,6 +269,8 @@ pub fn generate_stream_generic<M: InferenceModel>(
     let mut completion_secs = 0.0f64;
     let mut error_tokens = Vec::new();
     let eos_ids = model.stop_token_ids();
+    // 同上：入口清一次，早退（取消 / 打断）也不会把脏 cache 留给下一轮。
+    model.clear_cache();
     let stream = stream! {
         let mut input_ids = input_ids;
         let mut tool_call_id = None;

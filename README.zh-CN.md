@@ -108,7 +108,10 @@ cargo build --release --features sherpa       # 两个都要
 
 > **sherpa-onnx 说明**：`sherpa-*` 特性链接的是 sherpa-onnx **动态库**，产物旁边需要
 > `onnxruntime.dll` 和 `sherpa-onnx-*.dll`（构建脚本会自动拷到 `target/<profile>/`）。
-> 这两个后端的模型**没有托管在 ModelScope**，请用 `--weight-path` 指向本地目录。
+> 这两个后端的权重从 **ModelScope 镜像**下载（SenseVoice：
+> `WEAAEW/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17`，Kokoro：
+> `journey0ad/kokoro-multi-lang-v1_1`），`aha download` 或首次 `serv`/`cli` 启动时
+> 自动拉到 `~/.aha/<模型id>`；已有目录用 `--weight-path` 指定。
 >
 > **不要**手动往 `[dependencies]` 里加 `sherpa-onnx`：它默认走 `static`，会和
 > `sentencepiece` 内嵌的 protobuf 撞 LNK2005。一律走 `onnx-runtime` / `sherpa-asr` /
@@ -137,6 +140,29 @@ python scripts/build_android.py --release      # -> target/aarch64-linux-android
 reqwest 默认的平台证书校验，那套在 Android 上要 JVM context），所以 `aha download`
 在设备上可以直接用。
 
+**以库的形式嵌进 App**：[`aha-ffi`](aha-ffi) 是 C ABI（`.so` + 头文件），下载也一并导出了：
+`aha_model_download(model_id, save_dir, retries, on_progress, user, err)`（返回 0 / -1 / -2，
+`-2` 表示被 `aha_model_download_cancel` 取消）、`aha_model_dir`、以及轮询用的
+`aha_model_download_done/total/files_done/files_total`。镜像仓库表在
+[`src/models/mirrors.rs`](src/models/mirrors.rs)，宿主只传 `-m` 那个 id 就行；JNI 壳与
+Kotlin 封装见 [`aha-ffi/examples/android/`](aha-ffi/examples/android/)。
+
+**NPU（Hexagon HTP / NNAPI）**
+
+手机确实有 NPU，aha 也够得着 —— 但只对走 ONNX Runtime 的模型有用（SenseVoice 和 Kokoro）。
+走 candle 的那些（LLM、VLM、OCR）照旧跑 CPU，candle 没有移动端 NPU 后端。
+
+```bash
+aha npu                 # 这台机器有什么：QNN 库、HTP 版本、NNAPI、ORT 编了哪些 EP
+aha npu -r              # 只输出该传给 --provider 的值
+aha cli -m SenseVoice --provider qnn
+```
+
+一个绕不开的坑：`sherpa-onnx` 的 Android 预编译包里那套 ONNX Runtime 只编了 CPU 和 NNAPI
+两个 execution provider，所以配它用 `--provider qnn` 会退回 CPU。真要上 HTP 得自己用
+`--use_qnn` 编 ONNX Runtime、再用它编 sherpa-onnx（`SHERPA_ONNX_LIB_DIR`），步骤在
+[`docs/npu.zh-CN.md`](docs/npu.zh-CN.md)。何况 Android 16/17 上 NNAPI 已经没了，QNN 是唯一的路。
+
 ### CLI 快速参考
 
 ```bash
@@ -158,6 +184,9 @@ aha run -m all-minilm-l6-v2 -i "Rust embedding test" --weight-path D:\model_down
 
 # 仅启动服务（模型已下载）
 aha serv -m Qwen/Qwen3-ASR-0.6B -p 10100
+
+# 看这台机器有什么推理后端（NPU / QNN / NNAPI）
+aha npu
 
 ```
 
@@ -188,6 +217,7 @@ curl http://localhost:10100/v1/chat/completions \
 | [CLI 参考](docs/cli.zh-CN.md) | 命令行界面 |
 | [API 文档](docs/api.zh-CN.md) | 库与 REST API |
 | [支持的模型](docs/supported-models.zh-CN.md) | 可用的 AI 模型 |
+| [NPU 加速](docs/npu.zh-CN.md) | 手机 NPU、`--provider`、`aha npu` |
 | [核心概念](docs/concepts.zh-CN.md) | 架构与设计 |
 | [开发指南](docs/development.zh-CN.md) | 贡献指南 |
 | [更新日志](docs/changelog.zh-CN.md) | 版本历史 |

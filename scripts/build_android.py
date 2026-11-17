@@ -209,6 +209,70 @@ def read_needed(readelf: Path, artifact: Path) -> str:
     return ", ".join(needed) if needed else "（无）"
 
 
+def find_qnn_include(sdk_root: Path) -> Path | None:
+    """QNN 头文件在 include/QNN/QnnInterface.h；SDK 常被拆成几份解包，往上找几层。"""
+    bases = [sdk_root, *list(sdk_root.parents)[:4]]
+    for base in bases:
+        candidate = base / "include" / "QNN"
+        if (candidate / "QnnInterface.h").is_file():
+            return candidate
+    for base in bases:
+        for depth in ("*", "*/*"):
+            for found in base.glob(f"{depth}/include/QNN/QnnInterface.h"):
+                return found.parent
+    return None
+
+
+def build_qnn_shim(ndk_dir: Path, llvm_bin: Path, api: int, out_dir: Path) -> Path | None:
+    """把 native/qnn/aha_qnn.c 编成 libaha_qnn.so，放在 aha 同目录。
+
+    `aha qnn` 是运行时 dlopen 这个垫片的；没有它只是这条子命令不可用，
+    不影响其它功能，所以缺 QNN SDK 时只提示、不算失败。
+    """
+    src_dir = ROOT / "native" / "qnn"
+    src = src_dir / "aha_qnn.c"
+    if not src.is_file():
+        return None
+    sdk_env = os.environ.get("QNN_SDK_ROOT")
+    if not sdk_env:
+        say("没设 QNN_SDK_ROOT，跳过 libaha_qnn.so（设备上 `aha qnn` 会提示缺垫片）")
+        return None
+    include = find_qnn_include(Path(sdk_env))
+    if include is None:
+        say(f"QNN_SDK_ROOT={sdk_env} 里找不到 include/QNN/QnnInterface.h，跳过 libaha_qnn.so")
+        return None
+
+    prebuilt = ndk_dir / "toolchains" / "llvm" / "prebuilt" / host_tag()
+    ndk_sysroot = prebuilt / "sysroot"
+    clang = prebuilt / "bin" / exe("clang")
+    out = out_dir / "libaha_qnn.so"
+    cmd = [
+        str(clang),
+        "-shared",
+        "-fPIC",
+        "-O2",
+        "-std=c11",
+        f"--target={TRIPLE}{api}",
+        f"--sysroot={ndk_sysroot}",
+        "-I",
+        str(include),
+        "-I",
+        str(src_dir),
+        str(src),
+        "-o",
+        str(out),
+        "-llog",
+        "-ldl",
+    ]
+    say("编译 QNN 垫片 " + out.name)
+    code = subprocess.call(cmd)
+    if code != 0:
+        say(f"libaha_qnn.so 编译失败（exit {code}），`aha qnn` 将不可用")
+        return None
+    say(f"QNN 垫片：{out}（{out.stat().st_size / 1024:.0f} KB）")
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="交叉编译 aha 到 Android（aarch64-linux-android）",
@@ -291,6 +355,9 @@ def main() -> int:
     size_mb = artifact.stat().st_size / (1024 * 1024)
     say(f"产物：{artifact}（{size_mb:.0f} MB）")
     print(f"    依赖：{read_needed(llvm_bin / exe('llvm-readelf'), artifact)}")
+
+    # ---- 6. QNN 垫片（可选，要 QNN_SDK_ROOT） ----
+    build_qnn_shim(ndk_dir, llvm_bin, args.api, artifact.parent)
     return 0
 
 

@@ -46,6 +46,34 @@ AhaCallbacks cb = { on_chunk, on_done, NULL, NULL };
 aha_generate_stream(model, messages_json, 128, 0, &cb, &err);
 ```
 
+## 下载权重
+
+宿主拿到的不只是 `.so`，还要有几百 MB 的权重。`aha_model_download` 把 aha 内置的
+ModelScope 下载计划包出来（镜像表见 `src/models/mirrors.rs`），宿主不用知道仓库 id：
+
+```c
+static void on_progress(const char *path, uint64_t done, uint64_t total, void *user) {
+    printf("\r%s %.1f/%.1f MB", path, done / 1048576.0, total / 1048576.0);
+}
+
+/* 阻塞调用：放在你自己的后台线程里，别占 UI 线程。 */
+int code = aha_model_download("qwen3.5-gguf", /*save_dir=*/NULL, /*retries=*/3,
+                              on_progress, NULL, &err);
+if (code == -2) { /* 用户取消（见 aha_model_download_cancel） */ }
+if (code == 0) {
+    char *dir = aha_model_dir("qwen3.5-gguf", NULL, &err);
+    void *model = aha_model_load("qwen3.5-gguf", dir, 4, &err);
+    aha_string_free(dir);
+}
+```
+
+- `save_dir` 传 `NULL` 就是 `~/.aha`；Android 上没有 home，**必须**设 `AHA_HOME` 或显式传目录。
+- 不在镜像表里的 id 当成 ModelScope 仓库整仓下载（`aha download -m <repo>` 的语义）。
+- 中途被杀没关系：已完成文件按大小跳过，直接再调一次就续上；单文件写 `.part`，校验大小后才改名。
+- 不想用回调就传 `NULL`，定期读 `aha_model_download_done()` / `_total()` 画进度条。
+
+Android 的 JNI 壳、Kotlin 封装和 CMake 配置见 [`examples/android/`](examples/android/)。
+
 ## 约定
 
 | 项 | 规则 |

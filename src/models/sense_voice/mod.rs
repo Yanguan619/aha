@@ -37,16 +37,28 @@ pub struct SenseVoiceModel {
 impl SenseVoiceModel {
     /// Build a recognizer from a model directory, auto-detecting the ONNX file
     /// (`model.int8.onnx` preferred, then `model.onnx`) and `tokens.txt`.
+    ///
+    /// When an NPU provider is active (`--provider plugin:...`, `qnn`, `nnapi`),
+    /// `model.qnn.onnx` — the static-shape QDQ model the HTP accepts — is tried
+    /// first; the dynamic int8 export cannot run there.
     pub fn init_from_dir(dir: &str, num_threads: i32) -> Result<Self> {
         let dir = std::path::Path::new(dir);
-        let model = ["model.int8.onnx", "model.onnx"]
+        let npu = crate::utils::npu::effective_provider()
+            .map(|p| crate::utils::npu::is_npu_provider(&p))
+            .unwrap_or(false);
+        let mut candidates: Vec<&str> = vec!["model.int8.onnx", "model.onnx"];
+        if npu {
+            candidates.insert(0, "model.qnn.onnx");
+        }
+        let model = candidates
             .iter()
             .map(|name| dir.join(name))
             .find(|path| path.exists())
             .ok_or_else(|| {
                 anyhow!(
-                    "no SenseVoice ONNX model found in {} (expected model.int8.onnx or model.onnx)",
-                    dir.display()
+                    "no SenseVoice ONNX model found in {} (expected {})",
+                    dir.display(),
+                    candidates.join(" or ")
                 )
             })?;
         let tokens = dir.join("tokens.txt");

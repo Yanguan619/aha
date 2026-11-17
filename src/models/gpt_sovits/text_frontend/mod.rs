@@ -28,7 +28,8 @@ pub use tone_sandhi::Seg;
 /// `v_rep_map`：多音节时韵母缩写。
 const V_REP_MAP: [(&str, &str); 3] = [("uei", "ui"), ("iou", "iu"), ("uen", "un")];
 /// `pinyin_rep_map`：零声母整音节改写。
-const PINYIN_REP_MAP: [(&str, &str); 4] = [("ing", "ying"), ("i", "yi"), ("in", "yin"), ("u", "wu")];
+const PINYIN_REP_MAP: [(&str, &str); 4] =
+    [("ing", "ying"), ("i", "yi"), ("in", "yin"), ("u", "wu")];
 /// `single_rep_map`：零声母单韵母改写。
 const SINGLE_REP_MAP: [(char, &str); 4] = [('v', "yu"), ('e', "e"), ('i', "y"), ('u', "w")];
 
@@ -87,8 +88,9 @@ impl ZhFrontend {
         let dir = model_dir.as_ref();
 
         let pack_path = dir.join("frontend_zh.json");
-        let pack: FrontendPack = serde_json::from_reader(BufReader::new(File::open(&pack_path)
-            .with_context(|| format!("打开 {}", pack_path.display()))?))
+        let pack: FrontendPack = serde_json::from_reader(BufReader::new(
+            File::open(&pack_path).with_context(|| format!("打开 {}", pack_path.display()))?,
+        ))
         .with_context(|| format!("解析 {}", pack_path.display()))?;
 
         let dict_path = dir.join("dict.txt");
@@ -196,14 +198,10 @@ impl ZhFrontend {
                     continue;
                 }
                 let (initials, finals) = self.word_pinyin(&item.word);
-                let finals = self.sandhi.modified_tone(
-                    &self.jieba,
-                    &item.word,
-                    &item.pos,
-                    finals,
-                );
-                let (initials, finals) =
-                    self.merge_erhua(initials, finals, &item.word, &item.pos);
+                let finals = self
+                    .sandhi
+                    .modified_tone(&self.jieba, &item.word, &item.pos, finals);
+                let (initials, finals) = self.merge_erhua(initials, finals, &item.word, &item.pos);
                 initials_all.extend(initials);
                 finals_all.extend(finals);
             }
@@ -394,7 +392,10 @@ mod tests {
     #[test]
     fn rep_maps_match_python() {
         // 零声母：yin2 -> ("", "in2") -> pinyin "in" -> "yin"
-        assert_eq!(PINYIN_REP_MAP.iter().find(|(k, _)| *k == "in").unwrap().1, "yin");
+        assert_eq!(
+            PINYIN_REP_MAP.iter().find(|(k, _)| *k == "in").unwrap().1,
+            "yin"
+        );
         assert_eq!(V_REP_MAP.iter().find(|(k, _)| *k == "uei").unwrap().1, "ui");
     }
 
@@ -404,7 +405,8 @@ mod tests {
         let punct: HashSet<char> = ['。', '！', '？', '，', '；', '\n'].into_iter().collect();
         // 直接测纯切分逻辑（不依赖 ZhFrontend 的词典）：
         // "你好。走吧。今天天气真不错，我们出去逛逛吧。"
-        let parts = normalize::split_sentences("你好。走吧。今天天气真不错，我们出去逛逛吧。", &punct);
+        let parts =
+            normalize::split_sentences("你好。走吧。今天天气真不错，我们出去逛逛吧。", &punct);
         assert_eq!(
             parts,
             vec!["你好。", "走吧。", "今天天气真不错，", "我们出去逛逛吧。"]
@@ -425,7 +427,10 @@ mod tests {
                 None => out.push(pending),
             }
         }
-        assert_eq!(out, vec!["你好。走吧。今天天气真不错，", "我们出去逛逛吧。"]);
+        assert_eq!(
+            out,
+            vec!["你好。走吧。今天天气真不错，", "我们出去逛逛吧。"]
+        );
         // 关键性质：没有一段是空的，且拼起来等于原文。
         assert!(out.iter().all(|s| !s.trim().is_empty()));
         assert_eq!(out.concat(), "你好。走吧。今天天气真不错，我们出去逛逛吧。");

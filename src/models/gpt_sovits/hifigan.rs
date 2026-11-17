@@ -186,7 +186,10 @@ impl HifiGan {
             let mean = v.iter().map(|a| *a as f64).sum::<f64>() / n;
             let std = (v.iter().map(|a| (*a as f64 - mean).powi(2)).sum::<f64>() / n).sqrt();
             let peak = v.iter().fold(0f32, |m, a| m.max(a.abs()));
-            eprintln!("    [dec] {label:<14} dims={:?} std={std:.4} peak={peak:.4}", x.dims());
+            eprintln!(
+                "    [dec] {label:<14} dims={:?} std={std:.4} peak={peak:.4}",
+                x.dims()
+            );
         }
         Ok(())
     }

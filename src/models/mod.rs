@@ -3,6 +3,8 @@ pub mod bigvgan;
 pub mod campplus;
 pub mod common;
 pub mod deepseek_ocr;
+/// 按模型 id 下载权重的统一入口（FFI / 宿主进程用）。
+pub mod download;
 pub mod feature_extractor;
 pub mod fun_asr_nano;
 pub mod glm_asr_nano;
@@ -10,6 +12,8 @@ pub mod glm_ocr;
 #[cfg(feature = "gpt-sovits")]
 pub mod gpt_sovits;
 pub mod hunyuan_ocr;
+/// Hy-MT2（混元 1.8B 翻译模型）的 GGUF 镜像信息与下载。
+pub mod hy_mt2;
 pub mod index_tts;
 #[cfg(feature = "sherpa-tts")]
 pub mod kokoro;
@@ -20,6 +24,8 @@ pub mod lfm2vl;
 pub mod mask_gct;
 pub mod minicpm4;
 pub mod minicpm5;
+/// 模型 → ModelScope 仓库的唯一真值表。
+pub mod mirrors;
 pub mod moss_audio_tokenizer_nano;
 pub mod moss_tts_nano;
 pub mod paddleocr_vl;
@@ -34,17 +40,14 @@ pub mod qwen3vl;
 pub mod rmbg2_0;
 #[cfg(feature = "sherpa-asr")]
 pub mod sense_voice;
+#[cfg(feature = "vla")]
+pub mod turbovla;
 pub mod voxcpm;
 pub mod voxcpm_refact;
 pub mod w2v_bert_2_0;
-#[cfg(feature = "vla")]
-pub mod turbovla;
 // pub mod sam3;
 pub mod fire_red_vad;
 
-/// llama.cpp 后端：把生成交给 llama.cpp，能跑 candle 不支持的新架构/新量化（如 STQ）。
-#[cfg(feature = "llama")]
-pub mod llama_cpp;
 pub mod gpt2;
 pub mod llama;
 
@@ -120,6 +123,9 @@ pub enum ModelInstance<'a> {
     Vla(crate::models::turbovla::TurboVlaModel),
     #[cfg(feature = "gpt-sovits")]
     GptSovits(crate::models::gpt_sovits::GptSovitsModel),
+    /// llama.cpp 托管的 GGUF（如 Hy-MT2 的 STQ 量化）：架构/量化都由 llama.cpp 负责。
+    #[cfg(feature = "llama")]
+    LlamaCpp(crate::models::common::llama_cpp::LlamaCppModel),
 }
 
 impl<'a> GenerateModel for ModelInstance<'a> {
@@ -169,6 +175,8 @@ impl<'a> GenerateModel for ModelInstance<'a> {
             ModelInstance::GptSovits(_) => Err(anyhow!(
                 "gpt-sovits is a tts model; use POST /v1/tts instead of chat completions"
             )),
+            #[cfg(feature = "llama")]
+            ModelInstance::LlamaCpp(model) => model.generate(mes),
         }
     }
 
@@ -227,6 +235,8 @@ impl<'a> GenerateModel for ModelInstance<'a> {
             ModelInstance::GptSovits(_) => Err(anyhow!(
                 "gpt-sovits is a tts model; use POST /v1/tts instead of streaming chat completions"
             )),
+            #[cfg(feature = "llama")]
+            ModelInstance::LlamaCpp(model) => model.generate_stream(mes),
         }
     }
 }
@@ -301,11 +311,35 @@ pub fn load_gguf_model<'a>(
     gguf_path: &str,
     mmproj_path: Option<&str>,
     device: Option<&Device>,
+    n_ctx: u32,
+    threads: i32,
 ) -> Result<ModelInstance<'a>> {
     let model = match model_type {
         WhichModel::Qwen3_5Gguf => {
             let model = Qwen3_5GenerateModel::init_from_gguf(gguf_path, mmproj_path, device)?;
             ModelInstance::Qwen3_5(model)
+        }
+        WhichModel::HyMT2Gguf => {
+            #[cfg(feature = "llama")]
+            {
+                // STQ 量化只有 llama.cpp（带 PR #22836 的构建）能解析；mmproj 对文本翻译模型没有意义。
+                let model =
+                    crate::models::common::llama_cpp::LlamaCppModel::init_with_prompt_renderer(
+                        gguf_path,
+                        n_ctx,
+                        threads,
+                        Some(crate::models::hy_mt2::render_prompt),
+                    )?;
+                ModelInstance::LlamaCpp(model)
+            }
+            #[cfg(not(feature = "llama"))]
+            {
+                let model_id = model_type.as_string();
+                return Err(anyhow!(
+                    "model id {model_id} 需要 llama.cpp 后端：用 `cargo build --features llama` \
+                     编译，并先跑 native/scripts/build-llama.sh <abi> 生成静态库"
+                ));
+            }
         }
         _ => {
             let model_id = model_type.as_string();
@@ -334,6 +368,48 @@ fn warn_sherpa_ignores_device(model: WhichModel, device: Option<&Device>, dtype:
     }
 }
 
+/// NPU provider 只对 ONNX Runtime 的模型（sherpa：SenseVoice / Kokoro）有效。
+///
+/// candle 没有移动端 NPU 后端（QNN / NNAPI / ANE 都没接），所以给 LLM / VL /
+/// embedding 传 `--provider qnn`**不会**让它跑在 NPU 上。这里喊一声，
+/// 免得用户看日志里 provider=qnn 就以为自己在用 NPU。
+fn warn_npu_provider_on_candle(model: WhichModel) {
+    let Some(provider) = crate::utils::npu::effective_provider() else {
+        return;
+    };
+    // 就是 ONNX Runtime 的模型（SenseVoice / Kokoro）？`is_sherpa_model` 只在
+    // 编了 sherpa 特性时存在，没编就当成"都不是"。
+    let is_ort = {
+        #[cfg(any(feature = "sherpa-asr", feature = "sherpa-tts"))]
+        {
+            model.is_sherpa_model()
+        }
+        #[cfg(not(any(feature = "sherpa-asr", feature = "sherpa-tts")))]
+        {
+            false
+        }
+    };
+    if !crate::utils::npu::is_npu_provider(&provider) || is_ort {
+        return;
+    }
+    tracing::warn!(
+        model = %model.as_string(),
+        %provider,
+        "--provider 不影响这个模型：它走 candle，而 candle 没有移动端 NPU 后端，实际会跑在 CPU 上。\
+         能吃 --provider 的是 SenseVoice / Kokoro 这类 ONNX Runtime 模型"
+    );
+    // tracing 只在设了 RUST_LOG 时才输出；用户专门传了 --provider qnn 却跑在 CPU 上，
+    // 这件事必须无条件说出来，且一个进程只说一次（multi 会加载多个模型）。
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        eprintln!(
+            "注意：--provider {provider} 对 {} 无效 —— 它走 candle，而 candle 没有移动端 NPU 后端，\
+             实际跑在 CPU 上。能吃 --provider 的是 SenseVoice / Kokoro 这类 ONNX Runtime 模型。",
+            model.as_string()
+        );
+    });
+}
+
 pub fn load_model<'a>(
     model_type: WhichModel,
     path: &str,
@@ -341,6 +417,7 @@ pub fn load_model<'a>(
     dtype: Option<DType>,
     threads: i32,
 ) -> Result<ModelInstance<'a>> {
+    warn_npu_provider_on_candle(model_type);
     let model = match model_type {
         WhichModel::AllMiniLML6V2 => {
             let model = AllMiniLML6V2Embedding::init(path, device, dtype)?;

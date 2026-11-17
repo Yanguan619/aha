@@ -22,9 +22,9 @@ use candle_core::{DType, Device, Module, Tensor};
 use candle_nn::{Conv1d, Conv1dConfig, Embedding, Linear, VarBuilder, conv1d, embedding, linear};
 use serde::Deserialize;
 
+use super::eres2net::ERes2NetV2;
 use super::flow::FlowBlock;
 use super::hifigan::HifiGan;
-use super::eres2net::ERes2NetV2;
 use super::quantizer::SemanticQuantizer;
 use super::style::{self, StyleEncoder};
 use super::vits_attn::{Mrte, VitsEncoder};
@@ -235,8 +235,7 @@ fn interpolate_linear(x: &Tensor, target: usize) -> Result<Tensor> {
 /// 最近邻 ×2（`F.interpolate(mode="nearest")`）
 fn upsample_x2(x: &Tensor) -> Result<Tensor> {
     let (b, c, t) = x.dims3()?;
-    Ok(x
-        .unsqueeze(3)?
+    Ok(x.unsqueeze(3)?
         .broadcast_as((b, c, t, 2))?
         .reshape((b, c, t * 2))?
         .contiguous()?)
@@ -463,9 +462,9 @@ impl Sovits {
             .contiguous()?;
 
         // 3) enc_p → (m, logs)
-        let (m, logs) = self
-            .enc_p
-            .forward(&quantized, text_ids, &ge512, opts.speed, &self.device)?;
+        let (m, logs) =
+            self.enc_p
+                .forward(&quantized, text_ids, &ge512, opts.speed, &self.device)?;
 
         // 4) z_p = m + N(0,1) * exp(logs) * noise_scale
         let frames = m.dim(2)?;

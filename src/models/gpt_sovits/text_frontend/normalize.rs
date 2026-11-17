@@ -186,7 +186,8 @@ impl Normalizer {
         'outer: while i < chars.len() {
             for (key, value) in &self.rep_map {
                 let key_chars: Vec<char> = key.chars().collect();
-                if i + key_chars.len() <= chars.len() && chars[i..i + key_chars.len()] == key_chars[..]
+                if i + key_chars.len() <= chars.len()
+                    && chars[i..i + key_chars.len()] == key_chars[..]
                 {
                     out.push_str(value);
                     i += key_chars.len();

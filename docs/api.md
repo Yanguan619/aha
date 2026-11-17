@@ -117,6 +117,38 @@ GET /health
 curl http://127.0.0.1:10100/health
 ```
 
+### Runtime metrics and panel
+
+`/metrics` returns in-process counters (nothing is persisted, no external service needed);
+`GET /` serves a dependency-free HTML panel reading the same data (1 s polling):
+per-route QPS / error rate / p50·p95·p99 / in-flight, the models loaded for the four roles
+(asr / tts / system1 / vla), the process commit size and total-normalized CPU.
+
+```
+GET /metrics
+GET /
+```
+
+Notes:
+
+- Counters are keyed by **route** (`/audio/speech`, `/v1/audio/transcriptions`, `/v1/decisions`, …);
+  requests that match no route are counted as `(unmatched)`, and `/metrics` / `/` themselves are not counted.
+- Quantiles are the **upper bound** of a fixed millisecond bucket
+  (5/10/25/50/100/250/400/600/800/1000/1500/2000/3000/…/30000) with no in-bucket interpolation,
+  so with very few samples you will see values snapped to bucket edges.
+- Streaming endpoints (`pcm` on `/audio/speech`, SSE on `/v1/chat/completions`) record the time from
+  receiving the request to handing back the response / first chunk — not the client's full playback.
+- `process.mem_mb` is the Windows commit size (`PagefileUsage`); aha's weights mostly live in commit
+  rather than resident pages, so the working set is not a usable proxy for memory usage.
+
+#### Example
+
+```bash
+curl http://127.0.0.1:10100/metrics
+# open the panel in a browser
+start http://127.0.0.1:10100/
+```
+
 ### Models
 
 Get information about the currently loaded model (OpenAI API compatible format).
@@ -361,27 +393,46 @@ data: [DONE]
 
 ### Audio Speech
 
-Generate speech from text (Text-to-Speech).
+Generate speech from text (Text-to-Speech). One endpoint, two request shapes — picked by whether
+the body carries a non-empty `input`.
 
 #### Endpoint
 ```
 POST /audio/speech
 ```
 
-#### Request Body
+#### Shape 1: `{input}` — the TTS role (Kokoro / GPT-SoVITS)
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `model` | string | Yes | Model identifier (e.g., "OpenBMB/VoxCPM-1.5") |
-| `messages` | array | Yes | Array of message objects |
+| `input` | string | Yes | Text to synthesize |
+| `voice` | string | No | Voice name (Kokoro: `zf_001`; GPT-SoVITS: a name from `voices.json`). Omit for the model default |
+| `response_format` | string | No | `wav` (default, whole file) or `pcm` (chunked raw PCM16LE). Anything else is a 400, never a silent fallback |
+| `speed` | number | No | 0.25–4.0, default 1.0 |
+| `model` | string | No | Ignored (the loaded TTS is always used) |
 
-#### Example
+```bash
+curl -X POST http://127.0.0.1:10100/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input":"Hello, this is AHA speaking.","voice":"zf_001"}' --output out.wav
+```
+
+With `response_format: "pcm"` the response carries `X-Audio-Rate` (24000 for Kokoro, 32000 for
+GPT-SoVITS) and `X-Audio-Channels: 1`, and the body is chunked raw PCM pushed while it is
+being synthesized.
+
+#### Shape 2: `{messages}` — backends that treat TTS as a generative model (e.g. VoxCPM)
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `model` | string | Yes | Model identifier (e.g. "OpenBMB/VoxCPM1.5") |
+| `messages` | array | Yes | Array of message objects |
 
 ```bash
 curl http://127.0.0.1:10100/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "OpenBMB/VoxCPM-1.5",
+    "model": "OpenBMB/VoxCPM1.5",
     "messages": [
       {
         "role": "user",
@@ -393,9 +444,7 @@ curl http://127.0.0.1:10100/audio/speech \
   }'
 ```
 
-#### Response
-
-Returns audio data in base64 WAV format.
+The response is a chat-shaped JSON body (the audio sits in `content` as base64 WAV).
 
 ### Audio Transcriptions
 
@@ -411,6 +460,21 @@ POST /v1/audio/transcriptions
 ```
 
 Both endpoints use the same handler and return identical responses. The `/v1/audio/transcriptions` path follows OpenAI's standard API convention.
+
+When the `Content-Type` is **not** `multipart/form-data`, the body is treated as **raw PCM16LE
+mono 16 kHz**: it goes straight into the model, no temp file on disk (the desktop-pet `/v1/asr`
+alias is this same branch).
+
+```bash
+curl -X POST http://127.0.0.1:10100/v1/audio/transcriptions \
+  -H "Content-Type: audio/pcm" \
+  --data-binary @pcm16k.bin
+# {"text":"...","dur_ms":1000,"took_ms":26}
+```
+
+Only 16000 Hz is accepted, declared with `X-Sample-Rate` (16000 by default). `dur_ms` / `took_ms`
+are diagnostics; OpenAI clients ignore them.
+
 
 #### Request Body
 
@@ -720,6 +784,165 @@ curl http://127.0.0.1:10100/rerank \
 | `index` | int | Original document index |
 | `relevance_score` | f32 | Relevance score (higher is more relevant) |
 | `document` | string | Original document text |
+
+### Realtime (WebSocket)
+
+Speech-to-speech over a single WebSocket connection, shaped like OpenAI's Realtime API.
+The client streams microphone audio in; the server runs **ASR → LLM → TTS** and streams the
+synthesized audio (and/or text) back on the same socket. Everything happens inside this
+process: no separate ASR/TTS/LLM services are involved, so the models must already be loaded
+(see [`serv`](cli.md) and `GET /v1/models`).
+
+#### Endpoints
+
+```
+GET /realtime        (with Upgrade: websocket)
+GET /v1/realtime     (same handler)
+```
+
+Query parameters:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `model` | string | Which loaded LLM to talk to (defaults to the server's default model) |
+| `voice` | string | TTS voice passed to the speech model (default: `zf_001`) |
+
+`/realtime` needs the chat model plus the `asr` and `tts` roles in the *same* process, so start it
+with `aha multi --llm <dir> --asr <dir> --tts <dir>` and connect with `?model=llm` (the key `multi`
+registers the chat model under). With a single-model `serv` you still get the session protocol, but
+turns fail with `transcription_failed` / `tts_failed`.
+
+If the client sends `Sec-WebSocket-Protocol: realtime` (the OpenAI SDKs do), the server echoes
+it back. Audio is always **PCM16LE**; JSON events are text frames, audio may also be sent as
+binary frames.
+
+#### Talking to it
+
+1. The server opens with `session.created`.
+2. The client may adjust the session with `session.update` (voice, instructions, modalities,
+   sample rates, turn detection).
+3. The client streams audio: `input_audio_buffer.append` with base64 PCM16, or raw PCM16 in
+   binary frames. Input defaults to 24 kHz (`input_audio_sample_rate`); the server resamples to
+   the 16 kHz the ASR model wants.
+4. With `turn_detection` set to `server_vad` the server decides when the user stopped talking
+   and answers by itself. Otherwise the client sends `input_audio_buffer.commit` and then
+   `response.create`.
+5. The reply streams back as `response.audio.delta` (base64 PCM16, 200 ms chunks) plus
+   `response.audio_transcript.delta` / `response.text.delta`; it ends with `response.done`.
+
+#### Client events
+
+| Event | Description |
+|-------|-------------|
+| `session.update` | Merge a `session` object (fields below). Answers `session.updated` |
+| `input_audio_buffer.append` | `{"audio": "<base64 PCM16>"}` — append microphone audio |
+| `input_audio_buffer.commit` | Run ASR on the buffered audio and add it as a user item |
+| `input_audio_buffer.clear` | Drop the buffer. Answers `input_audio_buffer.cleared` |
+| `conversation.item.create` | Add a message by hand (`input_text` / `text` / `input_image` / `image_url` parts; images work with multimodal LLMs) |
+| `conversation.item.delete` | `{"item_id": "..."}` — drop one item from the conversation |
+| `response.create` | Generate a reply from the conversation so far |
+| `response.cancel` | Interrupt the response that is currently streaming |
+
+`conversation.item.truncate` / `input_audio_buffer.truncate` are accepted and ignored (the audio
+has already been sent to the client).
+
+#### `session` fields
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `model` | server default | LLM to use |
+| `voice` | `zf_001` | TTS voice |
+| `speed` | `1.0` | TTS speed (clamped to 0.25–4.0) |
+| `instructions` | `""` | System prompt prepended to the conversation |
+| `modalities` | `["audio"]` | Any of `audio`, `text` |
+| `temperature` | `0.8` | Sampling temperature (0.0–2.0) |
+| `max_response_output_tokens` | `"inf"` | Number or `"inf"` |
+| `input_audio_sample_rate` | `24000` | 8000–96000, multiple of 100 |
+| `output_audio_sample_rate` | `24000` | Same range; audio deltas use this rate |
+| `input_audio_format` / `output_audio_format` | `pcm16` | Only `pcm16` is supported |
+| `turn_detection` | `null` | `null` (manual) or `{"type":"server_vad", "threshold":0.02, "prefix_padding_ms":300, "silence_duration_ms":300, "create_response":true, "interrupt_response":true}` |
+| `input_audio_transcription` | `{"model":"aha-asr"}` | Non-null enables ASR on commit; `null` disables |
+| `transcription_enabled` | `true` | Convenience switch for the same thing |
+
+#### Server events
+
+| Event | Description |
+|-------|-------------|
+| `session.created` / `session.updated` | Full session object, `id` starts with `sess_` |
+| `input_audio_buffer.speech_started` / `speech_stopped` | Emitted by `server_vad` |
+| `input_audio_buffer.committed` | Buffered audio became a conversation item |
+| `input_audio_buffer.cleared` | Buffer dropped |
+| `conversation.item.created` / `conversation.item.deleted` | Item bookkeeping |
+| `conversation.item.input_audio_transcription.completed` | ASR result for the user's utterance |
+| `response.created` | A reply started |
+| `response.output_item.added` / `response.content_part.added` | Reply scaffolding |
+| `response.audio.delta` | Base64 PCM16 chunk (`200 ms`) at `output_audio_sample_rate` |
+| `response.audio_transcript.delta` / `response.text.delta` | Text deltas (transcript of the audio, or plain text) |
+| `response.audio_transcript.done` / `response.text.done` | Part finished |
+| `response.output_item.done` / `response.content_part.done` | Item finished |
+| `response.done` | Reply finished (`status`: `completed` / `cancelled` / `failed`), includes the final text |
+| `error` | `{"error": {"type", "code", "message"}}` — the connection stays open |
+
+Every event carries `type` and a unique `event_id`.
+
+#### Example
+
+```javascript
+const ws = new WebSocket("ws://127.0.0.1:10100/realtime?voice=zf_001");
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+  if (msg.type === "response.audio.delta") playPcm16(msg.delta, msg.sample_rate);
+};
+ws.onopen = () => {
+  ws.send(JSON.stringify({
+    type: "session.update",
+    session: {
+      modalities: ["audio", "text"],
+      instructions: "你是一个桌面宠物，回答要短。",
+      turn_detection: { type: "server_vad", silence_duration_ms: 600 },
+    },
+  }));
+  // 每 20 ms 的麦克风 PCM16（24 kHz）直接当二进制帧发
+  mic.on("data", (pcm) => ws.send(pcm));
+};
+```
+
+#### Notes and limitations
+
+- Only `pcm16` is supported (no G.711 / `g711_ulaw`) — the desktop pet needs raw samples anyway.
+- Tool calls are not implemented; `tools` in `session.update` is accepted but ignored.
+- `turn_detection` uses a lightweight energy VAD (RMS over 20 ms frames), not a neural one:
+  no GPU cost, and it reacts within one frame, at the price of being loudness-based.
+- Text generation holds the LLM's write lock, so one reply at a time per model; audio synthesis
+  runs concurrently with generation, which is what keeps the time-to-first-audio short.
+- Audio deltas are cut every 200 ms; the TTS model itself produces a sentence at a time.
+- `usage` is not reported (`null`).
+
+#### Latency tuning
+
+Time to first audio (commit the buffer → first `response.audio.delta`) measured at
+**0.55–0.87 s** on an RTX 4060 Laptop / 32 cores with Qwen3-0.6B + SenseVoice + Kokoro —
+the same on a cold server, because the chat model is warmed before the port opens. Broken down:
+ASR 79 ms → first LLM token (38–324 ms once warm) → first sentence (5 chars) 117–150 ms →
+first TTS chunk 308–440 ms.
+
+Highest-leverage knobs, roughly in order:
+
+1. **Use a `--release` build.** In a debug build candle is unoptimized and the same turn took
+   160 seconds (measured, not a typo). `Cargo.toml` now sets
+   `[profile.dev.package."*"] opt-level = 3`, but release is still what you want.
+2. **`--threads 16`.** sherpa-onnx defaults to 4 threads for ASR/TTS and `--threads 0`
+   only auto-picks 4–8. A 5-char utterance dropped from 527 ms to 312 ms.
+3. **`--device cuda`.** Affects the candle LLM only; sherpa ASR/TTS stay on CPU (a WARN line
+   in the startup log says so).
+4. **`enable_thinking: false`** (the default). With the thinking chain on, the model emits
+   thousands of reasoning tokens first — in a voice loop that means no audio at all.
+5. **4-character first sentence.** The first sentence is flushed at a comma once it has 4
+   chars (「小柴迎客，」), later sentences wait for 24; see `FIRST_SENTENCE_MIN_CHARS`.
+6. `turn_detection.silence_duration_ms` defaults to 300 — the wait between you stopping and
+   recognition starting. Measured turn latency (last speech frame → first audio) at 16 threads:
+   **0.97–1.2 s** at 300 ms. Going to 250 cuts 「你好，我是小桌宠，」 at its comma pause and
+   splits one sentence into two turns; 500 feels sluggish by comparison.
 
 ### Graceful Shutdown
 

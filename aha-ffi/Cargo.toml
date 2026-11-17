@@ -18,6 +18,9 @@ anyhow = "1.0.100"
 base64 = "0.22.1"
 clap = { version = "4.5.51", features = ["derive"] }
 serde_json = "1.0.145"
+# 下载入口要在同步的 C 调用里跑 aha 的 async 下载器，自带一个小 runtime
+# （不依赖宿主有没有 tokio，Android 上通常没有）。
+tokio = { version = "1.47.1", features = ["rt-multi-thread"] }
 
 [features]
 default = []

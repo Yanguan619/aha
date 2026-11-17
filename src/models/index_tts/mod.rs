@@ -4,9 +4,8 @@ pub mod config;
 pub mod emo;
 pub mod frontend;
 pub mod gpt;
+pub mod pipeline;
 #[allow(clippy::module_inception)]
 pub mod pth_loader;
-pub mod pipeline;
 pub mod s2mel;
 pub mod tokenizer;
-

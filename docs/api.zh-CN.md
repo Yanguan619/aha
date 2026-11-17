@@ -116,6 +116,36 @@ GET /health
 curl http://127.0.0.1:10100/health
 ```
 
+### 运行时指标与面板
+
+`/metrics` 返回进程内计数（不落盘、不需要外部服务），`GET /` 是读同一份数据的纯前端面板：
+每秒轮询，显示各端点 QPS / 错误率 / p50·p95·p99 / 并发、四个角色（asr / tts / system1 / vla）
+加载的模型、进程提交内存与整机归一化 CPU。
+
+```
+GET /metrics
+GET /
+```
+
+要点：
+
+- 计数口径是**路由**（`/audio/speech`、`/v1/audio/transcriptions`、`/v1/decisions`…），
+  未匹配到路由的请求记为 `(unmatched)`；`/metrics` 和 `/` 自身不计入。
+- 分位数取自固定毫秒桶的**桶上界**（5/10/25/50/100/250/400/600/800/1000/1500/2000/3000/…
+  /30000），不做桶内插值，所以样本很少时会看到取整到桶边界的值。
+- 流式端点（`/audio/speech` 的 `pcm`、`/v1/chat/completions` 的 SSE）记录的是"收到请求到交出
+  响应/首块"的时间，不含客户端整段播放。
+- `process.mem_mb` 是 Windows 的提交内存（`PagefileUsage`）；aha 的模型权重大多在 commit 里
+  而不在常驻页，所以不要把工作集当成内存占用来看。
+
+#### 示例
+
+```bash
+curl http://127.0.0.1:10100/metrics
+# 面板直接用浏览器打开
+start http://127.0.0.1:10100/
+```
+
 ### 模型列表
 
 获取当前加载的模型信息（OpenAI API 兼容格式）。
@@ -363,27 +393,44 @@ data: [DONE]
 
 ### 语音生成
 
-从文本生成语音（文本转语音）。
+从文本生成语音（文本转语音）。同一个端点支持两种请求形状，靠请求体里有没有**非空** `input` 区分。
 
 #### 端点
 ```
 POST /audio/speech
 ```
 
-#### 请求体
+#### 形状一：`{input}` —— TTS 角色（Kokoro / GPT-SoVITS）
 
 | 参数 | 类型 | 必需 | 描述 |
 |------|------|------|------|
-| `model` | string | 是 | 模型标识符（如 "OpenBMB/VoxCPM-0.5B1.5"） |
-| `messages` | array | 是 | 消息对象数组 |
+| `input` | string | 是 | 要合成的文本 |
+| `voice` | string | 否 | 音色名（Kokoro 如 `zf_001`；GPT-SoVITS 用 `voices.json` 里的名字）。不给就用模型默认音色 |
+| `response_format` | string | 否 | `wav`（默认，整段 WAV）或 `pcm`（chunked 裸 PCM16LE 流）。其它格式返回 400，不静默降级 |
+| `speed` | number | 否 | 语速，0.25–4.0，默认 1.0 |
+| `model` | string | 否 | 被忽略（始终用已加载的 TTS） |
 
-#### 示例
+```bash
+curl -X POST http://127.0.0.1:10100/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input":"你好，这是 AHA 在说话。","voice":"zf_001"}' --output out.wav
+```
+
+`response_format: "pcm"` 时响应头带 `X-Audio-Rate`（Kokoro 24000 / GPT-SoVITS 32000）和
+`X-Audio-Channels: 1`，body 是 chunked 的裸 PCM，边合成边推。
+
+#### 形状二：`{messages}` —— 把 TTS 当生成模型的后端（如 VoxCPM）
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `model` | string | 是 | 模型标识符（如 "OpenBMB/VoxCPM1.5"） |
+| `messages` | array | 是 | 消息对象数组 |
 
 ```bash
 curl http://127.0.0.1:10100/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "OpenBMB/VoxCPM-0.5B1.5",
+    "model": "OpenBMB/VoxCPM1.5",
     "messages": [
       {
         "role": "user",
@@ -395,10 +442,7 @@ curl http://127.0.0.1:10100/audio/speech \
   }'
 ```
 
-#### 响应
-
-以 base64 WAV 格式返回音频数据。
-
+响应是 chat 形状的 JSON（音频在 content 里，base64 WAV）。
 
 ### 语音转写
 
@@ -414,6 +458,20 @@ POST /v1/audio/transcriptions
 ```
 
 两个端点使用相同的处理函数并返回相同的响应。`/v1/audio/transcriptions` 路径遵循 OpenAI 的标准 API 约定。
+
+`Content-Type` 不是 `multipart/form-data` 时按**裸 PCM16LE 单声道 16k** 处理：直接进模型，
+不落临时文件（桌宠的 `/v1/asr` 就是这条分支的别名）。
+
+```bash
+curl -X POST http://127.0.0.1:10100/v1/audio/transcriptions \
+  -H "Content-Type: audio/pcm" \
+  --data-binary @pcm16k.bin
+# {"text":"...","dur_ms":1000,"took_ms":26}
+```
+
+采样率只支持 16000，可用 `X-Sample-Rate` 声明（缺省即 16000）。`dur_ms` / `took_ms`
+是诊断字段，OpenAI 客户端会忽略。
+
 
 #### 请求参数
 
@@ -724,6 +782,156 @@ curl http://127.0.0.1:10100/rerank \
 | `index` | int | 原始文档索引 |
 | `relevance_score` | f32 | 相关性分数（越高越相关） |
 | `document` | string | 原始文档文本 |
+
+### 实时语音（WebSocket）
+
+一条 WebSocket 连接上完成"语音进、语音出"，形状对齐 OpenAI 的 Realtime API：
+客户端把麦克风音频推上来，服务端跑 **ASR → LLM → TTS**，把合成好的音频（和/或文本）
+在同一连接上流回去。全部在本进程内完成，不依赖额外的 ASR/TTS/LLM 服务，所以模型必须
+已经加载（见 [`serv`](cli.zh-CN.md) 与 `GET /v1/models`）。
+
+#### 端点
+
+```
+GET /realtime         （带 Upgrade: websocket）
+GET /v1/realtime      （同一个处理函数）
+```
+
+查询参数：
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `model` | string | 用哪个已加载的 LLM（默认用服务端默认模型） |
+| `voice` | string | 传给语音模型的音色（默认 `zf_001`） |
+
+`/realtime` 要求对话模型和 `asr`、`tts` 两个角色在**同一个进程**里，所以这样起服务：
+`aha multi --llm <目录> --asr <目录> --tts <目录>`，连的时候带 `?model=llm`（`multi` 给对话模型
+登记的 key）。单模型 `serv` 也能完成握手、跑会话协议，但每轮会以 `transcription_failed` / `tts_failed` 收场。
+
+客户端若发送 `Sec-WebSocket-Protocol: realtime`（OpenAI 官方 SDK 会带），服务端原样回显。
+音频一律 **PCM16LE**；JSON 事件走文本帧，音频也可以直接发二进制帧。
+
+#### 一次对话的流程
+
+1. 服务端先发 `session.created`。
+2. 客户端可用 `session.update` 调整会话（音色、instructions、modalities、采样率、回合检测）。
+3. 客户端推音频：`input_audio_buffer.append`（base64 PCM16）或直接发二进制 PCM16。
+   输入默认 24 kHz（`input_audio_sample_rate`），服务端重采样到 ASR 需要的 16 kHz。
+4. `turn_detection` 设成 `server_vad` 时由服务端判断"说完了"并自动作答；否则客户端发
+   `input_audio_buffer.commit`，再发 `response.create`。
+5. 回复以 `response.audio.delta`（base64 PCM16，每块 200 ms）加
+   `response.audio_transcript.delta` / `response.text.delta` 流回，最后 `response.done`。
+
+#### 客户端事件
+
+| 事件 | 说明 |
+|------|------|
+| `session.update` | 合并 `session` 对象（字段见下表），回 `session.updated` |
+| `input_audio_buffer.append` | `{"audio": "<base64 PCM16>"}`，追加麦克风音频 |
+| `input_audio_buffer.commit` | 对已缓冲音频跑一遍 ASR，作为一条用户消息入对话 |
+| `input_audio_buffer.clear` | 清空缓冲，回 `input_audio_buffer.cleared` |
+| `conversation.item.create` | 手动加一条消息（`input_text` / `text` / `input_image` / `image_url`，多模态模型可带图） |
+| `conversation.item.delete` | `{"item_id": "..."}`，从对话里删一条 |
+| `response.create` | 基于当前对话生成回复 |
+| `response.cancel` | 打断正在流的这一轮 |
+
+`conversation.item.truncate` / `input_audio_buffer.truncate` 会接受但忽略（音频已经发给客户端了）。
+
+#### `session` 字段
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `model` | 服务端默认 | 用哪个 LLM |
+| `voice` | `zf_001` | TTS 音色 |
+| `speed` | `1.0` | TTS 语速（夹到 0.25–4.0） |
+| `instructions` | `""` | system prompt |
+| `modalities` | `["audio"]` | 可取 `audio`、`text` |
+| `temperature` | `0.8` | 采样温度（0.0–2.0） |
+| `max_response_output_tokens` | `"inf"` | 数字或 `"inf"` |
+| `input_audio_sample_rate` | `24000` | 8000–96000，且是 100 的整数倍 |
+| `output_audio_sample_rate` | `24000` | 同上；音频 delta 用这个采样率 |
+| `input_audio_format` / `output_audio_format` | `pcm16` | 只支持 `pcm16` |
+| `turn_detection` | `null` | `null`（手动提交）或 `{"type":"server_vad", "threshold":0.02, "prefix_padding_ms":300, "silence_duration_ms":300, "create_response":true, "interrupt_response":true}` |
+| `input_audio_transcription` | `{"model":"aha-asr"}` | 非 null 时 commit 会跑 ASR，null 关闭 |
+| `transcription_enabled` | `true` | 同一个开关的简写 |
+
+#### 服务端事件
+
+| 事件 | 说明 |
+|------|------|
+| `session.created` / `session.updated` | 完整 session 对象，`id` 以 `sess_` 开头 |
+| `input_audio_buffer.speech_started` / `speech_stopped` | `server_vad` 判定的人声开始/结束 |
+| `input_audio_buffer.committed` | 缓冲音频成为一条对话消息 |
+| `input_audio_buffer.cleared` | 缓冲已清空 |
+| `conversation.item.created` / `conversation.item.deleted` | 会话条目增删 |
+| `conversation.item.input_audio_transcription.completed` | 用户这句话的 ASR 结果 |
+| `response.created` | 一轮回复开始 |
+| `response.output_item.added` / `response.content_part.added` | 回复的条目/部件开始 |
+| `response.audio.delta` | base64 PCM16，每块 200 ms，采样率见 `output_audio_sample_rate` |
+| `response.audio_transcript.delta` / `response.text.delta` | 文本增量（音频转写或纯文本） |
+| `response.audio_transcript.done` / `response.text.done` | 文本部分结束 |
+| `response.output_item.done` / `response.content_part.done` | 条目/部件结束 |
+| `response.done` | 一轮回复结束（`status` 为 `completed` / `cancelled` / `failed`），带最终文本 |
+| `error` | `{"error": {"type", "code", "message"}}`，连接不会断 |
+
+每个事件都带 `type` 和唯一的 `event_id`。
+
+#### 示例
+
+```javascript
+const ws = new WebSocket("ws://127.0.0.1:10100/realtime?voice=zf_001");
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+  if (msg.type === "response.audio.delta") playPcm16(msg.delta, msg.sample_rate);
+};
+ws.onopen = () => {
+  ws.send(JSON.stringify({
+    type: "session.update",
+    session: {
+      modalities: ["audio", "text"],
+      instructions: "你是一个桌面宠物，回答要短。",
+      turn_detection: { type: "server_vad", silence_duration_ms: 600 },
+    },
+  }));
+  // 每 20 ms 的麦克风 PCM16（24 kHz）直接当二进制帧发
+  mic.on("data", (pcm) => ws.send(pcm));
+};
+```
+
+#### 说明与限制
+
+- 只支持 `pcm16`（没有 G.711 / `g711_ulaw`）——桌宠本来就要裸样本。
+- 不支持 tools 调用；`session.update` 里的 `tools` 会被接受但忽略。
+- `turn_detection` 用的是轻量能量 VAD（20 ms 一帧算 RMS），不是神经网络 VAD：
+  不吃 GPU、延迟一帧，代价是只认响度。
+- 文本生成期间持有 LLM 的写锁，同一模型一次只跑一轮；音频合成与生成并行，
+  这是"首音延迟"能压下来的原因。
+- 音频 delta 每 200 ms 切一块；TTS 模型本身是一句一出的。
+- 不统计 `usage`（返回 `null`）。
+
+#### 低延时建议
+
+首音延迟（客户端 commit 上传播放完 → 收到第一块 `response.audio.delta`）在
+RTX 4060 Laptop / 32 核 / Qwen3-0.6B + SenseVoice + Kokoro 上实测 **0.55–0.87 秒**
+（冷启动首轮同水平，对话模型的预热在端口开之前就跑完了），拆开是：
+ASR 79 ms → LLM 首个 token（预热后 38–324 ms）→ 首句凑够 5 字 117–150 ms → TTS 首块 308–440 ms。
+
+想接近这个数字，按收益从大到小：
+
+1. **用 `cargo build --release` 的二进制。** debug 构建里 candle 没优化，同一轮
+   要 160 秒（不是夸张，是实测）。Cargo.toml 里已加 `[profile.dev.package."*"]
+   opt-level = 3`，但仍建议 release。
+2. **`--threads 16`。** sherpa-onnx 的 ASR/TTS 默认只用 4 线程；`--threads` 传 0
+   也只会自动取 4–8。5 字短句合成从 527 ms 降到 312 ms。
+3. **`--device cuda`。** 只影响 candle 侧的对话模型；sherpa 的 ASR/TTS 是 CPU 的
+   （启动日志会有一行 WARN 提示）。
+4. **`enable_thinking: false`**（默认已关）。开着思考链时模型先吐几千 token 的
+   推理，语音场景等于没有首音。
+5. **首句门槛 4 字。** 第一句只要能凑出「小柴迎客，」就在逗号处切断送去合成，
+   后面的句子才等 24 字；改 `FIRST_SENTENCE_MIN_CHARS` 可调。
+6. `turn_detection.silence_duration_ms` 默认 300：这是"说完到开始识别"的等待，在对话体感里
+   占大头。16 线程下实测回合延迟（最后一帧人声 → 首音）**0.97–1.2 秒**。
+   再往下压到 250 会把「你好，我是小桌宠，」在逗号停顿处切断，一句话变两轮；500 则会明显变拖。
 
 ### 优雅关机
 

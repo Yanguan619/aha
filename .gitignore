@@ -34,3 +34,11 @@ __pycache__/
 
 # llama.cpp Ô¤±àÒë¾²Ì¬¿â£¨Ã¿¸ö ABI Ô¼ 100 MB£¬ÓÃ scripts ÏÖÉú³É£¬²»Èë¿â£©
 /llama-prebuilt/
+
+# æœ¬åœ°åˆ†æ / æ„å»ºäº§ç‰©ï¼ˆä¸å…¥åº“ï¼‰
+.tmp-*/
+abuild.log
+ck.log
+debug.log
+qcheck.log
+qt.log

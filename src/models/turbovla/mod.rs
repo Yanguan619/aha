@@ -21,9 +21,9 @@ pub mod ops;
 pub mod text;
 pub mod vision;
 
+use crate::models::turbovla::linear::{Linear, linear};
 use anyhow::{Context, Result, bail};
 use candle_core::{DType, Device, Module, Tensor};
-use crate::models::turbovla::linear::{linear, Linear};
 use candle_nn::VarBuilder;
 use image::imageops::FilterType;
 use std::collections::HashMap;
@@ -32,7 +32,7 @@ use std::sync::Mutex;
 use self::action::ActionHead;
 use self::config::ModelLayout;
 use self::fusion::{Interaction, VisionProjection};
-use self::text::{group_len_for, BertEncoder, TextBatch, TextTokenizer};
+use self::text::{BertEncoder, TextBatch, TextTokenizer, group_len_for};
 use self::vision::DinoV3;
 
 pub use config::TurboVlaConfig;
@@ -241,7 +241,9 @@ impl TurboVlaModel {
             text_cache: Mutex::new(HashMap::new()),
             text_order: Mutex::new(Vec::new()),
             graph_on: std::sync::atomic::AtomicBool::new(
-                std::env::var("TURBOVLA_GRAPH").map(|v| v != "0").unwrap_or(true),
+                std::env::var("TURBOVLA_GRAPH")
+                    .map(|v| v != "0")
+                    .unwrap_or(true),
             ),
 
             #[cfg(feature = "cuda")]
@@ -251,7 +253,8 @@ impl TurboVlaModel {
 
     pub fn action_dim(&self) -> usize {
         self.action_dim
-    }    pub fn horizon(&self) -> usize {
+    }
+    pub fn horizon(&self) -> usize {
         self.horizon
     }
     pub fn num_views(&self) -> usize {
@@ -271,7 +274,14 @@ impl TurboVlaModel {
         self_mask: &Tensor,
     ) -> Result<(Tensor, Tensor)> {
         self.interaction
-            .forward_layer(i, visual, text, Some(mask_l), Some(self_mask), self.zero_fill)
+            .forward_layer(
+                i,
+                visual,
+                text,
+                Some(mask_l),
+                Some(self_mask),
+                self.zero_fill,
+            )
             .map_err(anyhow::Error::from)
     }
 
@@ -303,12 +313,7 @@ impl TurboVlaModel {
 
     /// CUDA graph 路径：首次捕获，之后每帧只做 H2D + 一次 launch。
     #[cfg(feature = "cuda")]
-    fn predict_graph(
-        &self,
-        images: &[&[u8]],
-        instruction: &str,
-        state: &[f32],
-    ) -> Result<Tensor> {
+    fn predict_graph(&self, images: &[&[u8]], instruction: &str, state: &[f32]) -> Result<Tensor> {
         if images.len() != self.num_views {
             bail!("需要 {} 个视角，收到 {}", self.num_views, images.len());
         }
@@ -344,7 +349,10 @@ impl TurboVlaModel {
             &state_host,
             |pixel, st| {
                 let mut timer = Timer::disabled();
-                Ok(self.compute(pixel.tensor(), &feat, st.tensor(), &mut timer)?.1.2)
+                Ok(self
+                    .compute(pixel.tensor(), &feat, st.tensor(), &mut timer)?
+                    .1
+                    .2)
             },
         )?;
 
@@ -354,21 +362,12 @@ impl TurboVlaModel {
         if graphs.len() >= MAX_GRAPH_SLOTS {
             graphs.remove(0);
         }
-        graphs.push(GraphSlot {
-            key,
-            feat,
-            runner,
-        });
+        graphs.push(GraphSlot { key, feat, runner });
         Ok(first)
     }
 
     /// 跑一遍并保留各阶段张量（对齐 Python 参考时用）。
-    pub fn stages(
-        &self,
-        images: &[&[u8]],
-        instruction: &str,
-        state: &[f32],
-    ) -> Result<Stages> {
+    pub fn stages(&self, images: &[&[u8]], instruction: &str, state: &[f32]) -> Result<Stages> {
         let mut timer = Timer::disabled();
         self.run(images, instruction, state, &mut timer)
     }
@@ -484,7 +483,12 @@ impl TurboVlaModel {
     /// 溢出时只淘汰**最久没用的一条**，而不是像早期那样 `clear()` 全清。
     /// 桌宠的指令是小集合但会来回切换，全清等于每次切回来都要重跑 BERT
     /// （一条 ~100ms），比不缓存还糟。
-    fn text_features(&self, instruction: &str, group_len: usize, pad_len: usize) -> Result<TextFeat> {
+    fn text_features(
+        &self,
+        instruction: &str,
+        group_len: usize,
+        pad_len: usize,
+    ) -> Result<TextFeat> {
         let key = (instruction.to_string(), group_len);
         {
             let cache = self.text_cache.lock().unwrap();
@@ -570,8 +574,7 @@ fn preprocess(bytes: &[u8], size: usize, device: &Device, dtype: DType) -> Resul
 
 /// 同上，但只出主机侧的 f32 缓冲（graph 模式直接 H2D 进静态显存）。
 fn preprocess_host(bytes: &[u8], size: usize) -> Result<Vec<f32>> {
-    let img = image::load_from_memory(bytes)
-        .map_err(|e| anyhow::anyhow!("图片解码失败：{e}"))?;
+    let img = image::load_from_memory(bytes).map_err(|e| anyhow::anyhow!("图片解码失败：{e}"))?;
     // 和 PIL 对齐：尺寸已经一致时不做重采样（resize_exact 会模糊）。
     let rgb = if img.width() as usize == size && img.height() as usize == size {
         img.to_rgb8()

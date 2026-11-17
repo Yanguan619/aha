@@ -24,6 +24,7 @@ Qwen/Qwen3.5-2B                          Qwen                 vlm
 Qwen/Qwen3.5-4B                          Qwen                 vlm                  
 Qwen/Qwen3.5-9B                          Qwen                 vlm                  
 qwen3.5-gguf                             none                 vlm                  
+hy-mt2-1.8b-1.25bit-gguf                 Tencent-Hunyuan      llm                  
 Qwen/Qwen3-ASR-0.6B                      Qwen                 asr          ✔       
 Qwen/Qwen3-ASR-1.7B                      Qwen                 asr                  
 Qwen/Qwen3-Embedding-0.6B                Qwen                 embedding    ✔       
@@ -59,6 +60,22 @@ ZhipuAI/GLM-OCR                          ZhipuAI              ocr          ✔
 | **MiniCPM5-1B** | 1B | OpenBMB/MiniCPM5-1B | [Apache 2.0](https://huggingface.co/datasets/choosealicense/licenses/blob/main/markdown/apache-2.0.md) |
 | **LFM2-1.2B** | 1.2B | LiquidAI/LFM2-1.2B | [lfm1.0](https://huggingface.co/LiquidAI/LFM2-1.2B/blob/main/LICENSE) |
 | **LFM2.5-1.2B-Instruct** | 1.2B | LiquidAI/LFM2.5-1.2B-Instruct | [lfm1.0](https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct/blob/main/LICENSE) |
+
+## 机器翻译
+
+| 模型 | 参数量 | 语言 | 模型id | 开源协议 |
+|------|--------|------|--------|---------|
+| **Hy-MT2** | 1.8B | 33+ | hy-mt2-1.8b-1.25bit-gguf | [Apache 2.0](https://huggingface.co/datasets/choosealicense/licenses/blob/main/markdown/apache-2.0.md) |
+
+> Hy-MT2 走 llama.cpp 而不是 candle：1.25bit 权重是 STQ 量化，架构是自定义的
+> `hunyuan-dense`。因此需要 `--features llama` 构建，并先用
+> `native/scripts/build-llama.sh arm64-v8a`（Windows 用 `native/scripts/build-llama.ps1`）
+> 编出静态库。脚本会打 `native/patches/llama-stq.patch`（llama.cpp PR #22836）和
+> `native/patches/llama-stq-legacy-id.patch`，让模型发布时使用的 `Q2_0` 张量类型
+> 按 `STQ1_0` 解析。权重从 ModelScope 仓库 `Tencent-Hunyuan/Hy-MT2-1.8B-1.25bit-GGUF`
+> 自动下载，也可以用 `--gguf-path` 指向本地文件。模型卡推荐的采样已设为默认值
+> （temperature 0.7、top_p 0.6、top_k 20、repetition_penalty 1.05），
+> `--ctx-size` 默认 4096。
 
 ## Embedding
 
@@ -103,8 +120,9 @@ ZhipuAI/GLM-OCR                          ZhipuAI              ocr          ✔
 | **SenseVoice**（sherpa-onnx） | 234M | 中/英/日/韩/粤 | csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17 | [Apache 2.0](https://huggingface.co/datasets/choosealicense/licenses/blob/main/markdown/apache-2.0.md) |
 
 > SenseVoice 走 sherpa-onnx（ONNX Runtime）而不是 candle，需要用 `--features sherpa-asr` 构建
-> （只想两个后端都带可以做 `--features sherpa`）。权重不在 ModelScope 上，请用
-> `--weight-path` 指向本地目录。
+> （只想两个后端都带可以做 `--features sherpa`）。权重从 ModelScope 镜像
+> `WEAAEW/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17` 自动下载，
+> 也可以用 `--weight-path` 指向本地目录。
 
 
 ## 语音生成
@@ -115,7 +133,8 @@ ZhipuAI/GLM-OCR                          ZhipuAI              ocr          ✔
 | **Kokoro**（sherpa-onnx） | 82M | csukuangfj/kokoro-multi-lang-v1_1 | [Apache 2.0](https://huggingface.co/datasets/choosealicense/licenses/blob/main/markdown/apache-2.0.md) |
 
 > Kokoro 走 sherpa-onnx（ONNX Runtime）而不是 candle，需要用 `--features sherpa-tts` 构建。
-> 权重不在 ModelScope 上，请用 `--weight-path` 指向本地目录。
+> 权重从 ModelScope 镜像 `journey0ad/kokoro-multi-lang-v1_1` 自动下载，
+> 也可以用 `--weight-path` 指向本地目录。
 
 ## 图像处理
 
@@ -129,6 +148,18 @@ ZhipuAI/GLM-OCR                          ZhipuAI              ocr          ✔
 
 - [Hugging Face](https://huggingface.co) - 主模型中心
 - [ModelScope](https://modelscope.cn) - 中文模型中心
+
+桌宠与本地转换的权重统一托管在 ModelScope，`aha download` / 首次启动自动拉取：
+
+| 模型 | ModelScope 仓库 |
+|------|-----------------|
+| SenseVoice | `WEAAEW/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17` |
+| Kokoro | `journey0ad/kokoro-multi-lang-v1_1` |
+| Laya | `convaiinnovations/laya-multilingual` |
+| TurboVLA | `Yanguan/turbovla-libero` |
+| GPT-SoVITS | `Yanguan/gpt-sovits-v2pro-zh` |
+| qwen3.5-gguf | `Yanguan/qwen3.5-0.8b-gguf`（0.8B Q4_K_M + mmproj-F16） |
+| Hy-MT2 | `Tencent-Hunyuan/Hy-MT2-1.8B-1.25bit-GGUF`（1.8B 1.25bit STQ GGUF） |
 
 ## 添加新模型
 

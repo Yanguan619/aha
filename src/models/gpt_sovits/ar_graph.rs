@@ -19,11 +19,11 @@
 
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use candle_core::cuda_backend::cudarc::driver::CudaStream;
 use candle_core::{DType, Device, Tensor};
 
-use crate::models::common::cuda_graph::{static_zeros, upload_u32, CudaGraph, StaticTensor};
+use crate::models::common::cuda_graph::{CudaGraph, StaticTensor, static_zeros, upload_u32};
 
 /// 一个已捕获的「AR 一步」+ 它的定长缓冲。
 pub(crate) struct ArGraph {
@@ -58,7 +58,13 @@ impl ArGraph {
         compute: F,
     ) -> Result<Self>
     where
-        F: Fn(&StaticTensor, &StaticTensor, &StaticTensor, &[StaticTensor], &[StaticTensor]) -> Result<Tensor>,
+        F: Fn(
+            &StaticTensor,
+            &StaticTensor,
+            &StaticTensor,
+            &[StaticTensor],
+            &[StaticTensor],
+        ) -> Result<Tensor>,
     {
         let stream = cuda_stream(device)?;
         let hidden = heads * head_dim;
@@ -73,8 +79,16 @@ impl ArGraph {
         let mut k = Vec::with_capacity(n_layer);
         let mut v = Vec::with_capacity(n_layer);
         for _ in 0..n_layer {
-            k.push(static_zeros(device, DType::F32, (1, heads, head_dim, max_seq))?);
-            v.push(static_zeros(device, DType::F32, (1, heads, max_seq, head_dim))?);
+            k.push(static_zeros(
+                device,
+                DType::F32,
+                (1, heads, head_dim, max_seq),
+            )?);
+            v.push(static_zeros(
+                device,
+                DType::F32,
+                (1, heads, max_seq, head_dim),
+            )?);
         }
 
         let (graph, out) = CudaGraph::capture(device, || compute(&x, &pos, &arange, &k, &v))?;
@@ -119,7 +133,10 @@ impl ArGraph {
                 .transpose(1, 2)?
                 .transpose(2, 3)?
                 .contiguous()?;
-            let v_src = vc.reshape((1, len, heads, d))?.transpose(1, 2)?.contiguous()?;
+            let v_src = vc
+                .reshape((1, len, heads, d))?
+                .transpose(1, 2)?
+                .contiguous()?;
             self.k[i].tensor().scatter_set(&idx_k, &k_src, 3)?;
             self.v[i].tensor().scatter_set(&idx_v, &v_src, 2)?;
         }

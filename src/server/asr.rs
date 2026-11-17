@@ -2,6 +2,8 @@
 // Implements POST /audio/transcriptions and /v1/audio/transcriptions
 
 use std::path::{Path, PathBuf};
+#[cfg(feature = "sherpa-asr")]
+use std::time::Instant;
 
 use aha::models::GenerateModel;
 use aha::params::chat::{
@@ -11,9 +13,12 @@ use aha::params::chat::{
 use aha::utils::{clean_asr_response, map_language_code};
 use axum::{
     Json,
-    extract::{Multipart, multipart::MultipartRejection},
-    http::StatusCode,
+    body::to_bytes,
+    extract::{FromRequest, Multipart, Request},
+    http::{HeaderMap, StatusCode, header},
+    response::{IntoResponse, Response},
 };
+use serde_json::json;
 use uuid::Uuid;
 
 use crate::params::asr::{TranscriptionRequest, TranscriptionResponse};
@@ -72,10 +77,13 @@ impl Drop for TempAudioFile {
 
 /// Handle audio transcription requests
 ///
-/// This endpoint accepts multipart/form-data with an audio file and returns
-/// the transcription text in OpenAI-compatible format.
+/// 两种输入，靠 Content-Type 分流：
+/// - `multipart/form-data`：OpenAI 官方形状，音频文件落临时文件后交给模型解码；
+/// - 其它（`audio/pcm` 之类）：**裸 PCM16LE 单声道**，直接进模型，不落盘。
+///   桌宠的 `/v1/asr` 就是这个分支的别名。采样率只支持 16k，可用
+///   `X-Sample-Rate` 声明（缺省即 16000）。
 ///
-/// # Supported Parameters
+/// # Supported Parameters (multipart)
 /// - `file`: Audio file (required) - wav, mp3, m4a, etc.
 /// - `model`: Model name (optional, ignored)
 /// - `language`: Language code (optional) - zh, en, yue, ar, de, fr, es, pt, id, it, ko, ru, th, vi, ja, tr, hi, ms, nl, sv, da, fi, pl, cs, fil, fa, el, ro, hu, mk
@@ -85,16 +93,34 @@ impl Drop for TempAudioFile {
 ///
 /// # Returns
 /// JSON response with format: `{"text": "transcribed text"}`
-pub(crate) async fn transcriptions(
-    multipart: Result<Multipart, MultipartRejection>,
-) -> (StatusCode, Json<serde_json::Value>) {
-    let mut multipart = match multipart {
-        Ok(multipart) => multipart,
-        Err(rejection) => {
-            return error::from_multipart_rejection(rejection);
-        }
-    };
+pub(crate) async fn transcriptions(request: Request) -> Response {
+    if !is_multipart(request.headers()) {
+        let headers = request.headers().clone();
+        return match to_bytes(request.into_body(), ASR_MAX_BYTES).await {
+            Ok(body) => handle_pcm(&headers, &body).await.into_response(),
+            Err(error) => error::invalid_request(
+                format!("读取请求体失败：{error}"),
+                None,
+                Some("payload_too_large"),
+            )
+            .into_response(),
+        };
+    }
+    match Multipart::from_request(request, &()).await {
+        Ok(multipart) => handle_multipart(multipart).await.into_response(),
+        Err(rejection) => error::from_multipart_rejection(rejection).into_response(),
+    }
+}
 
+fn is_multipart(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.trim().to_ascii_lowercase().starts_with("multipart/"))
+}
+
+/// 官方形状：multipart 文件 → 临时文件 → 模型自己解码。
+async fn handle_multipart(mut multipart: Multipart) -> (StatusCode, Json<serde_json::Value>) {
     let mut params = TranscriptionRequest::default();
     let mut audio_file: Option<TempAudioFile> = None;
 
@@ -197,9 +223,7 @@ pub(crate) async fn transcriptions(
     };
 
     // Get the model and generate transcription：优先角色 key（asr），否则按请求里的 model
-    let Some(model_ref) =
-        model_by_key("asr").or_else(|| model_for(params.model.as_deref()))
-    else {
+    let Some(model_ref) = model_by_key("asr").or_else(|| model_for(params.model.as_deref())) else {
         return error::model_not_loaded();
     };
 
@@ -263,10 +287,125 @@ pub(crate) async fn transcriptions(
     }
 }
 
+// --------------------------------------------------------------------------- //
+// 裸 PCM（无 WAV 头）——非 multipart 分支和桌宠 `/v1/asr` 共用这一份实现
+// --------------------------------------------------------------------------- //
+
+/// 单段上限 60 秒（16k × 2 字节 × 60）。
+pub(crate) const ASR_MAX_BYTES: usize = 16_000 * 2 * 60;
+/// 小于 100ms 不值得识别（VAD 偶尔会切出一个极短的段）。
+pub(crate) const ASR_MIN_SAMPLES: usize = 16_000 / 10;
+
+/// 裸 PCM 请求的合法性检查。错误文案是给人看的（桌宠侧直接转日志）。
+pub(crate) fn check_pcm_request(headers: &HeaderMap, len: usize) -> Option<String> {
+    if len == 0 {
+        return Some("没有音频数据".to_owned());
+    }
+    if len > ASR_MAX_BYTES {
+        return Some(format!("音频太长（{len} 字节，上限 {ASR_MAX_BYTES}）"));
+    }
+    // 客户端可以用 X-Sample-Rate 声明；缺省按 16k 处理
+    let rate: i32 = headers
+        .get("X-Sample-Rate")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(16_000);
+    if rate != 16_000 {
+        return Some(format!("只接受 16000Hz（收到 {rate}）；请在客户端重采样"));
+    }
+    if !len.is_multiple_of(2) {
+        return Some("PCM 字节数必须是偶数（16bit）".to_owned());
+    }
+    None
+}
+
+/// PCM16LE → 归一化 f32（模型要的输入）。
+pub(crate) fn pcm_to_samples(pcm: &[u8]) -> Vec<f32> {
+    pcm.as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| i16::from_le_bytes(*pair) as f32 / 32768.0)
+        .collect()
+}
+
+/// 跑一遍识别。两个调用方各自把错误包成自己的格式。
+#[cfg(feature = "sherpa-asr")]
+pub(crate) async fn transcribe_samples(samples: &[f32]) -> Result<String, (StatusCode, String)> {
+    let Some(model_ref) = model_by_key("asr") else {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "模型没有初始化".to_owned()));
+    };
+    let guard = model_ref.write().await;
+    let Some(model) = guard.instance.asr_model() else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "当前模型 {} 不是 SenseVoice，无法识别",
+                guard.which_model.as_string()
+            ),
+        ));
+    };
+    tokio::task::block_in_place(|| model.transcribe(samples)).map_err(|error| {
+        tracing::error!(%error, "ASR 识别失败");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("识别失败：{error:#}"),
+        )
+    })
+}
+
+/// 裸 PCM 分支：识别 → `{text,dur_ms,took_ms}`（多的字段 OpenAI 客户端会忽略）。
+async fn handle_pcm(headers: &HeaderMap, body: &[u8]) -> (StatusCode, Json<serde_json::Value>) {
+    if let Some(message) = check_pcm_request(headers, body.len()) {
+        return error::invalid_request(message, None, Some("invalid_audio"));
+    }
+    let dur_ms = body.len() * 1000 / (16_000 * 2);
+    if body.len() < ASR_MIN_SAMPLES * 2 {
+        return (
+            StatusCode::OK,
+            Json(json!({ "text": "", "dur_ms": dur_ms, "took_ms": 0 })),
+        );
+    }
+
+    #[cfg(feature = "sherpa-asr")]
+    {
+        let samples = pcm_to_samples(body);
+        let started = Instant::now();
+        match transcribe_samples(&samples).await {
+            Ok(text) => {
+                let took = started.elapsed().as_millis();
+                tracing::info!(dur_ms, took_ms = took, ?text, "ASR 识别完成");
+                (
+                    StatusCode::OK,
+                    Json(json!({ "text": text, "dur_ms": dur_ms, "took_ms": took })),
+                )
+            }
+            Err((status, message)) => error::api_error(
+                status,
+                if status == StatusCode::INTERNAL_SERVER_ERROR {
+                    "server_error"
+                } else {
+                    "invalid_request_error"
+                },
+                message,
+                None,
+                None,
+            ),
+        }
+    }
+
+    #[cfg(not(feature = "sherpa-asr"))]
+    error::api_error(
+        StatusCode::BAD_REQUEST,
+        "invalid_request_error",
+        "这个二进制没编 sherpa-asr 特性，不能识别裸 PCM",
+        None,
+        Some("role_missing"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn test_transcription_response_serialization() {
@@ -277,5 +416,42 @@ mod tests {
             serde_json::to_value(response).unwrap(),
             json!({"text": "hello"})
         );
+    }
+
+    fn pcm_headers(rate: Option<&str>) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        if let Some(rate) = rate {
+            map.insert(
+                "X-Sample-Rate",
+                axum::http::HeaderValue::from_str(rate).unwrap(),
+            );
+        }
+        map
+    }
+
+    #[test]
+    fn pcm_check_rejects_empty_odd_and_wrong_rate() {
+        assert!(check_pcm_request(&pcm_headers(None), 0).is_some());
+        assert!(
+            check_pcm_request(&pcm_headers(None), 3)
+                .unwrap()
+                .contains("偶数")
+        );
+        assert!(
+            check_pcm_request(&pcm_headers(Some("48000")), 1000)
+                .unwrap()
+                .contains("16000")
+        );
+        assert!(check_pcm_request(&pcm_headers(Some("16000")), 1000).is_none());
+        assert!(check_pcm_request(&pcm_headers(None), 1000).is_none());
+        assert!(check_pcm_request(&pcm_headers(None), ASR_MAX_BYTES + 2).is_some());
+        assert!(check_pcm_request(&pcm_headers(None), ASR_MAX_BYTES).is_none());
+    }
+
+    #[test]
+    fn pcm_to_samples_normalizes() {
+        let samples = pcm_to_samples(&[0x00, 0x40, 0x00, 0xc0]);
+        assert!((samples[0] - 0.5).abs() < 1e-6);
+        assert!((samples[1] + 0.5).abs() < 1e-6);
     }
 }

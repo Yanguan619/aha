@@ -19,11 +19,13 @@
 //! 抓图期间不能有新的分配、也不能有 D2H（candle 会直接报错），所以采样、判停这类要回主机的
 //! 动作都得留在图外。
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use std::sync::Arc;
 
-use candle_core::cuda_backend::cudarc::driver::{sys, CudaGraph as RawGraph, CudaStream, DevicePtr};
 use candle_core::cuda_backend::CudaStorage;
+use candle_core::cuda_backend::cudarc::driver::{
+    CudaGraph as RawGraph, CudaStream, DevicePtr, sys,
+};
 use candle_core::{DType, Device, Shape, Storage, Tensor};
 
 /// 图输入/图状态的张量：只可能由 [`static_zeros`] 造出来。

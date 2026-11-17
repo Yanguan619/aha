@@ -20,14 +20,16 @@
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Mutex;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::task::{Context, Poll, Waker};
 use std::thread::Result as ThreadResult;
 
 use aha::models::common::model_mapping::WhichModel;
 use aha::models::{GenerateModel, ModelInstance, load_model};
 use aha::params::chat::{
-    ChatCompletionChunkResponse, ChatCompletionParameters, ChatCompletionResponse,
-    ChatMessage, ChatMessageContent, ChatMessageContentPart, DeltaChatMessage,
+    ChatCompletionChunkResponse, ChatCompletionParameters, ChatCompletionResponse, ChatMessage,
+    ChatMessageContent, ChatMessageContentPart, DeltaChatMessage,
 };
 use aha::utils::string_to_static_str;
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
@@ -72,7 +74,11 @@ impl AhaCallbacks {
     }
 }
 
-fn emit(f: Option<unsafe extern "C" fn(*const c_char, *mut c_void)>, user: *mut c_void, text: &str) {
+fn emit(
+    f: Option<unsafe extern "C" fn(*const c_char, *mut c_void)>,
+    user: *mut c_void,
+    text: &str,
+) {
     let Some(f) = f else { return };
     let text = text.replace('\0', "");
     let Ok(text) = CString::new(text) else { return };
@@ -133,7 +139,10 @@ unsafe fn clear_error(err: *mut *mut c_char) {
     }
 }
 
-fn finish_ptr(result: ThreadResult<Result<*mut c_void, String>>, err: *mut *mut c_char) -> *mut c_void {
+fn finish_ptr(
+    result: ThreadResult<Result<*mut c_void, String>>,
+    err: *mut *mut c_char,
+) -> *mut c_void {
     match result {
         Ok(Ok(value)) => value,
         Ok(Err(message)) => {
@@ -260,7 +269,11 @@ fn build_parameters(
 }
 
 fn normalise(max_tokens: i32, temperature_percent: i32) -> (u32, Option<f32>) {
-    let max_tokens = if max_tokens > 0 { max_tokens as u32 } else { 512 };
+    let max_tokens = if max_tokens > 0 {
+        max_tokens as u32
+    } else {
+        512
+    };
     let temperature = if temperature_percent > 0 {
         Some(temperature_percent as f32 / 100.0)
     } else {
@@ -296,7 +309,12 @@ fn transcribe_pcm(
     Ok(extract_text(&response))
 }
 
-fn generate_text(handle: &ModelHandle, messages_json: &str, max_tokens: i32, temperature_percent: i32) -> Result<String, String> {
+fn generate_text(
+    handle: &ModelHandle,
+    messages_json: &str,
+    max_tokens: i32,
+    temperature_percent: i32,
+) -> Result<String, String> {
     let messages: serde_json::Value =
         serde_json::from_str(messages_json).map_err(|e| format!("invalid messages JSON: {e}"))?;
     let (max_tokens, temperature) = normalise(max_tokens, temperature_percent);
@@ -308,7 +326,13 @@ fn generate_text(handle: &ModelHandle, messages_json: &str, max_tokens: i32, tem
 }
 
 /// Drives the blocking `generate_stream` iterator, turning it into callbacks.
-fn stream_text(handle: &ModelHandle, messages_json: &str, max_tokens: i32, temperature_percent: i32, callbacks: &AhaCallbacks) -> Result<(), String> {
+fn stream_text(
+    handle: &ModelHandle,
+    messages_json: &str,
+    max_tokens: i32,
+    temperature_percent: i32,
+    callbacks: &AhaCallbacks,
+) -> Result<(), String> {
     let messages: serde_json::Value =
         serde_json::from_str(messages_json).map_err(|e| format!("invalid messages JSON: {e}"))?;
     let (max_tokens, temperature) = normalise(max_tokens, temperature_percent);
@@ -392,9 +416,17 @@ pub unsafe extern "C" fn aha_model_load(
         let which = WhichModel::from_str(model_type, true)
             .map_err(|_| format!("unknown model type: {model_type}"))?;
         let device = aha::Device::Cpu;
-        let model = load_model(which, string_to_static_str(path.to_owned()), Some(&device), None, threads.max(1))
-            .map_err(|e| format!("load model failed: {e:#}"))?;
-        let handle = Box::new(ModelHandle { model: Mutex::new(model) });
+        let model = load_model(
+            which,
+            string_to_static_str(path.to_owned()),
+            Some(&device),
+            None,
+            threads.max(1),
+        )
+        .map_err(|e| format!("load model failed: {e:#}"))?;
+        let handle = Box::new(ModelHandle {
+            model: Mutex::new(model),
+        });
         Ok(Box::into_raw(handle) as *mut c_void)
     }));
     unsafe { clear_error(err) };
@@ -449,7 +481,10 @@ pub unsafe extern "C" fn aha_transcribe(
     finish_ptr_wrapped(result, err)
 }
 
-fn finish_ptr_wrapped(result: ThreadResult<Result<*mut c_char, String>>, err: *mut *mut c_char) -> *mut c_char {
+fn finish_ptr_wrapped(
+    result: ThreadResult<Result<*mut c_char, String>>,
+    err: *mut *mut c_char,
+) -> *mut c_char {
     match result {
         Ok(Ok(value)) => value,
         Ok(Err(message)) => {
@@ -539,8 +574,14 @@ pub unsafe extern "C" fn aha_stream_create(
             .map_err(|_| format!("unknown ASR model type: {asr_type}"))?;
         let mut session = aha::stream::AsrSession::new(vad_dir, which, asr_dir)
             .map_err(|e| format!("open asr session failed: {e:#}"))?;
-        session.set_partial_interval_ms(if partial_ms > 0 { partial_ms as u64 } else { 700 });
-        let handle = Box::new(StreamHandle { session: Mutex::new(session) });
+        session.set_partial_interval_ms(if partial_ms > 0 {
+            partial_ms as u64
+        } else {
+            700
+        });
+        let handle = Box::new(StreamHandle {
+            session: Mutex::new(session),
+        });
         Ok(Box::into_raw(handle) as *mut c_void)
     }));
     unsafe { clear_error(err) };
@@ -564,7 +605,9 @@ unsafe fn dispatch_asr_events(events: Vec<aha::stream::AsrEvent>, callbacks: &Ah
                     unsafe { f(callbacks.user) };
                 }
             }
-            aha::stream::AsrEvent::Partial(text) => emit(callbacks.on_partial, callbacks.user, &text),
+            aha::stream::AsrEvent::Partial(text) => {
+                emit(callbacks.on_partial, callbacks.user, &text)
+            }
             aha::stream::AsrEvent::Final(text) => emit(callbacks.on_final, callbacks.user, &text),
         }
     }
@@ -669,7 +712,9 @@ pub unsafe extern "C" fn aha_llama_load(
         let n_ctx = if n_ctx > 0 { n_ctx as u32 } else { 2048 };
         let model = aha::models::llama_cpp::LlamaCppModel::init(path, n_ctx, threads.max(1))
             .map_err(|e| format!("llama.cpp load failed: {e:#}"))?;
-        let handle = Box::new(LlamaHandle { model: Mutex::new(model) });
+        let handle = Box::new(LlamaHandle {
+            model: Mutex::new(model),
+        });
         Ok(Box::into_raw(handle) as *mut c_void)
     }));
     unsafe { clear_error(err) };
@@ -771,4 +816,257 @@ pub unsafe extern "C" fn aha_llama_chat_stream(
     }));
     unsafe { clear_error(err) };
     finish_int(result, err)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Model download
+// ---------------------------------------------------------------------------------------------
+//
+// 手机宿主拉权重是"装完 App 第一次开"这条路径上最耗时的一步：几百 MB 在 4G 上要几分钟，
+// 必须能显示进度、能取消，而不是卡在一个阻塞调用里。这里把 aha 的下载计划
+// （[`aha::models::download`]）原样暴露出来，线程模型交给宿主：Kotlin 里就是起一个
+// 后台线程/协程调 `aha_model_download`，回调里更新 UI。
+//
+// 两个使用形态都支持：
+//   * 回调式：传 `on_progress`，每次进度变化同步回调（不要在里面做耗时操作）；
+//   * 轮询式：`on_progress` 传 NULL，自己定期读 `aha_model_download_done/total`
+//     （Android 上更省心：回调跨 JNI 边界时容易踩线程 attach 的坑）。
+
+/// 进度回调：`path` 是当前文件（只在回调期间有效，别存指针），`done` / `total` 是整次
+/// 下载的累计字节，`user` 原样回传。
+pub type AhaDownloadProgress =
+    unsafe extern "C" fn(path: *const c_char, done: u64, total: u64, user: *mut c_void);
+
+/// 最近一次 `aha_model_download` 的累计进度（轮询式宿主用）。
+static DOWNLOAD_DONE: AtomicU64 = AtomicU64::new(0);
+static DOWNLOAD_TOTAL: AtomicU64 = AtomicU64::new(0);
+static DOWNLOAD_FILES_DONE: AtomicU64 = AtomicU64::new(0);
+static DOWNLOAD_FILES_TOTAL: AtomicU64 = AtomicU64::new(0);
+/// `aha_model_download_cancel` 置位，下一次进度检查时中断下载。
+static DOWNLOAD_CANCELLED: AtomicBool = AtomicBool::new(false);
+static DOWNLOAD_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+
+fn download_runtime() -> Result<&'static tokio::runtime::Runtime, String> {
+    if let Some(runtime) = DOWNLOAD_RUNTIME.get() {
+        return Ok(runtime);
+    }
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_name("aha-download")
+        .enable_all()
+        .build()
+        .map_err(|e| format!("create download runtime failed: {e}"))?;
+    Ok(DOWNLOAD_RUNTIME.get_or_init(|| runtime))
+}
+
+/// 权重所在的本地目录（`<save_dir>/<model_id>`，`save_dir` 省略时用 `~/.aha` 或
+/// `$AHA_HOME`）。下载成功后拿它当 `aha_model_load` 的 `path`。
+///
+/// Returns an owned string (free with `aha_string_free`), or `NULL` with `*err` set.
+///
+/// # Safety
+/// All pointers must be valid; `err` may be `NULL`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn aha_model_dir(
+    model_id: *const c_char,
+    save_dir: *const c_char,
+    err: *mut *mut c_char,
+) -> *mut c_char {
+    let result = catch_unwind(AssertUnwindSafe(|| -> Result<*mut c_char, String> {
+        let model_id = unsafe { read_str(model_id, "model_id") }?;
+        let save_dir = if save_dir.is_null() {
+            None
+        } else {
+            Some(unsafe { read_str(save_dir, "save_dir") }?)
+        };
+        let dir =
+            aha::models::download::model_dir(model_id, save_dir).map_err(|e| format!("{e:#}"))?;
+        Ok(into_c_string(dir.display().to_string()))
+    }));
+    unsafe { clear_error(err) };
+    finish_ptr_wrapped(result, err)
+}
+
+/// 下载一个模型的权重（阻塞调用，建议放在宿主自己的后台线程里）。
+///
+/// `model_id` 是 `-m` 接收的那个 id（`qwen3.5-gguf`、`gpt-sovits-v2pro-zh`、`OpenBMB/TurboVLA`、
+/// `csukuangfj/kokoro-multi-lang-v1_1` ...）；不在内置镜像表里的 id 当成 ModelScope 仓库
+/// 整仓下载。`save_dir` 可为 `NULL`（= `~/.aha` / `$AHA_HOME`）。
+///
+/// 返回 `0` 成功、`-1` 失败（`*err` 有消息）、`-2` 已取消。重复调用会跳过已经下完的文件，
+/// 所以"下到一半被杀"之后直接再调一次即可续上。
+///
+/// # Safety
+/// 指针必须有效；`on_progress` 可以为 `NULL`；`user` 在本次调用期间必须保持有效。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn aha_model_download(
+    model_id: *const c_char,
+    save_dir: *const c_char,
+    max_retries: i32,
+    on_progress: Option<AhaDownloadProgress>,
+    user: *mut c_void,
+    err: *mut *mut c_char,
+) -> i32 {
+    let result = catch_unwind(AssertUnwindSafe(|| -> Result<i32, String> {
+        let model_id = unsafe { read_str(model_id, "model_id") }?.to_owned();
+        let save_dir = if save_dir.is_null() {
+            None
+        } else {
+            Some(unsafe { read_str(save_dir, "save_dir") }?.to_owned())
+        };
+
+        DOWNLOAD_CANCELLED.store(false, Ordering::SeqCst);
+        DOWNLOAD_DONE.store(0, Ordering::SeqCst);
+        DOWNLOAD_TOTAL.store(0, Ordering::SeqCst);
+        DOWNLOAD_FILES_DONE.store(0, Ordering::SeqCst);
+        DOWNLOAD_FILES_TOTAL.store(0, Ordering::SeqCst);
+
+        let progress = |p: &aha::utils::DownloadProgress<'_>| {
+            DOWNLOAD_DONE.store(p.done, Ordering::Relaxed);
+            DOWNLOAD_TOTAL.store(p.total, Ordering::Relaxed);
+            DOWNLOAD_FILES_DONE.store(p.files_done as u64, Ordering::Relaxed);
+            DOWNLOAD_FILES_TOTAL.store(p.files_total as u64, Ordering::Relaxed);
+            if let Some(callback) = on_progress {
+                let path = CString::new(p.path.replace('\0', "")).unwrap_or_default();
+                unsafe { callback(path.as_ptr(), p.done, p.total, user) };
+            }
+        };
+        let cancel = || DOWNLOAD_CANCELLED.load(Ordering::SeqCst);
+        let ctl = aha::utils::DownloadCtl {
+            progress: Some(&progress),
+            cancel: Some(&cancel),
+        };
+
+        let runtime = download_runtime()?;
+        runtime
+            .block_on(aha::models::download::download_model_files(
+                &model_id,
+                save_dir.as_deref(),
+                max_retries.max(1) as u32,
+                ctl,
+            ))
+            .map_err(|e| format!("download {model_id} failed: {e:#}"))?;
+        Ok(0)
+    }));
+    unsafe { clear_error(err) };
+    match result {
+        Ok(Ok(code)) => code,
+        Ok(Err(message)) => {
+            if DOWNLOAD_CANCELLED.load(Ordering::SeqCst) {
+                -2
+            } else {
+                unsafe { set_error(err, message) };
+                -1
+            }
+        }
+        Err(_) => {
+            unsafe { set_error(err, "panic inside aha") };
+            -1
+        }
+    }
+}
+
+/// 请求取消正在进行的 `aha_model_download`（下一个 chunk 生效）。
+///
+/// 只置标记、立刻返回：下载线程自己退出后 `aha_model_download` 返回 `-2`。
+/// 在别的线程调用是安全的。
+#[unsafe(no_mangle)]
+pub extern "C" fn aha_model_download_cancel() {
+    DOWNLOAD_CANCELLED.store(true, Ordering::SeqCst);
+}
+
+/// 已下载字节数（轮询式宿主用；`on_progress` 传 NULL 时靠这三个读数画进度条）。
+#[unsafe(no_mangle)]
+pub extern "C" fn aha_model_download_done() -> u64 {
+    DOWNLOAD_DONE.load(Ordering::Relaxed)
+}
+
+/// 本次下载的总字节数（服务端文件列表之和；开始前为 0）。
+#[unsafe(no_mangle)]
+pub extern "C" fn aha_model_download_total() -> u64 {
+    DOWNLOAD_TOTAL.load(Ordering::Relaxed)
+}
+
+/// 已完成的文件数。
+#[unsafe(no_mangle)]
+pub extern "C" fn aha_model_download_files_done() -> u64 {
+    DOWNLOAD_FILES_DONE.load(Ordering::Relaxed)
+}
+
+/// 本次下载的文件总数。
+#[unsafe(no_mangle)]
+pub extern "C" fn aha_model_download_files_total() -> u64 {
+    DOWNLOAD_FILES_TOTAL.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    fn c_string(value: &str) -> CString {
+        CString::new(value).unwrap()
+    }
+
+    unsafe fn take_string(value: *mut c_char) -> String {
+        assert!(!value.is_null());
+        let text = unsafe { CStr::from_ptr(value) }
+            .to_str()
+            .unwrap()
+            .to_owned();
+        unsafe { aha_string_free(value) };
+        text
+    }
+
+    unsafe fn take_error(err: *mut c_char) -> String {
+        assert!(!err.is_null());
+        let text = unsafe { CStr::from_ptr(err) }.to_str().unwrap().to_owned();
+        unsafe { aha_string_free(err) };
+        text
+    }
+
+    #[test]
+    fn model_dir_joins_save_dir_and_id() {
+        let id = c_string("qwen3.5-gguf");
+        let dir = c_string(&std::env::temp_dir().display().to_string());
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let out = unsafe { aha_model_dir(id.as_ptr(), dir.as_ptr(), &mut err) };
+        let text = unsafe { take_string(out) };
+        assert!(err.is_null());
+        assert_eq!(
+            PathBuf::from(text),
+            std::env::temp_dir().join("qwen3.5-gguf")
+        );
+    }
+
+    #[test]
+    fn null_model_id_is_an_error_not_a_crash() {
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let out = unsafe { aha_model_dir(std::ptr::null(), std::ptr::null(), &mut err) };
+        assert!(out.is_null());
+        let message = unsafe { take_error(err) };
+        assert!(message.contains("model_id"), "{message}");
+    }
+
+    /// 空 id 在碰网络/磁盘之前就失败；顺便验证上一次的 cancel 标记不会串到下一次调用。
+    #[test]
+    fn blank_id_fails_and_cancel_flag_resets_per_call() {
+        aha_model_download_cancel();
+        let id = c_string("   ");
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let code = unsafe {
+            aha_model_download(
+                id.as_ptr(),
+                std::ptr::null(),
+                1,
+                None,
+                std::ptr::null_mut(),
+                &mut err,
+            )
+        };
+        assert_eq!(code, -1, "空 id 应该报错，而不是取消");
+        let message = unsafe { take_error(err) };
+        assert!(message.contains("model_id"), "{message}");
+    }
 }

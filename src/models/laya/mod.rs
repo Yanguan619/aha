@@ -14,8 +14,10 @@
 //!
 //! 模型来源按顺序找一个能用的：
 //! 1. `--weight-path`（或 `PET_LAYA_CKPT`）——微调版 / 指定目录
-//! 2. HF 缓存里已有的 laya checkpoint
-//! 3. `--model-id` 从 Hugging Face 下（`HF_ENDPOINT` 可指镜像）
+//! 2. HF 缓存里已有的 laya checkpoint（Python 版下过就免下载）
+//! 3. `~/.aha/convaiinnovations/laya-multilingual`（`aha download -m` 下过就有）
+//! 4. 从 ModelScope 镜像 `convaiinnovations/laya-multilingual` 下载
+//!    （复用 aha 自己的下载器，不用 sys1 的 hf-hub，国内直连）
 
 pub mod route;
 
@@ -34,8 +36,11 @@ use sys1::schema::{DecisionRequest, DecisionResponse};
 
 use crate::models::laya::route::RouteResult;
 
-/// 解析出来的模型目录 + 来源（hf-cache / download / model-path）。
+/// 解析出来的模型目录 + 来源（model-path / hf-cache / aha-home / download）。
 pub type ResolvedModel = (PathBuf, &'static str);
+
+/// 一次请求最多带多少个问题。Jev 标准允许 1–64，这里受 batcher 批内槽位限制。
+pub const MAX_QUESTIONS: usize = 4;
 
 /// 编进二进制的推理设备。
 pub const fn compile_device() -> &'static str {
@@ -127,8 +132,10 @@ impl LayaRouteModel {
             LAYA_MULTILINGUAL_MODEL_ID.to_owned(),
             BatcherConfig {
                 max_batch_size: 4,
-                max_batch_questions: 4,
-                max_questions_per_request: 1,
+                max_batch_questions: MAX_QUESTIONS,
+                // 标准 Jev 请求可以带多个问题（Ollama 允许 1–64）；这里受批内槽位
+                // 限制，超过的由 handler 直接拒（400），不落到 batcher 的 500。
+                max_questions_per_request: MAX_QUESTIONS,
                 wait: std::time::Duration::ZERO,
                 queue_capacity: 32,
                 response_timeout: Some(std::time::Duration::from_millis(request_timeout_ms)),
@@ -191,6 +198,18 @@ impl LayaRouteModel {
             confidence: Some(confidence),
             reason,
         })
+    }
+
+    /// 标准 Jev 请求透传：题面由调用方给，答案原样返回。
+    ///
+    /// 阈值 / 关键词短路 / 答案改写都是**调用方策略**，不在这里做——那些是
+    /// [`Self::route`] 的行为，只留给 selftest 和预热用。
+    pub async fn predict(&self, request: DecisionRequest) -> Result<DecisionResponse, String> {
+        self.warmup_once().await;
+        self.batcher
+            .predict(request)
+            .await
+            .map_err(|error| error.error)
     }
 
     /// 问模型。只有一条文本、一个问题，所以不需要批处理参数。
@@ -276,7 +295,7 @@ fn parse_answer(response: &DecisionResponse) -> Result<(String, f32), String> {
 // --------------------------------------------------------------------------- //
 
 /// 解析模型目录。`weight_path` 给了就用（必须真的像模型目录），否则先找缓存，
-/// 最后才联网下载。
+/// 最后才交给统一下载层从 ModelScope 镜像取。
 pub async fn resolve(weight_path: Option<&str>, model_id: &str) -> Result<ResolvedModel> {
     if let Some(path) = weight_path.map(Path::new) {
         if looks_like_model(path) {
@@ -288,11 +307,9 @@ pub async fn resolve(weight_path: Option<&str>, model_id: &str) -> Result<Resolv
                 .map(|mut d| d.next().is_none())
                 .unwrap_or(true)
         {
-            tracing::info!(dir = %path.display(), "模型目录为空，开始下载 Laya");
-            let downloaded = sys1::hub::download(model_id, "main")
-                .await
-                .context("下载模型失败")?;
-            return Ok((downloaded, "download"));
+            tracing::info!(dir = %path.display(), "模型目录为空，开始从 ModelScope 下载 Laya");
+            ensure_weights(path).await?;
+            return Ok((path.to_path_buf(), "download"));
         }
         bail!(
             "{} 不像 laya 模型目录（要 model.safetensors + config.json 或 encoder/config.json）",
@@ -302,20 +319,36 @@ pub async fn resolve(weight_path: Option<&str>, model_id: &str) -> Result<Resolv
     if let Some(path) = discover_cached() {
         return Ok((path, "hf-cache"));
     }
-    tracing::info!(
-        model_id,
-        "本地缓存没有 laya，开始从 Hugging Face 下载（HF_ENDPOINT 可指镜像）"
-    );
-    let path = sys1::hub::download(model_id, "main")
-        .await
-        .context("下载 Laya 模型失败")?;
-    if !looks_like_model(&path) {
-        bail!(
-            "下下来了但 {} 不像 laya 模型目录（model.safetensors 缺失？--model-id 选错仓库？）",
-            path.display()
-        );
+    // `aha download -m <id>` 也落在这里，跟其它模型一致
+    let dir = default_model_dir(model_id)?;
+    if looks_like_model(&dir) {
+        return Ok((dir, "aha-home"));
     }
-    Ok((path, "download"))
+    tracing::info!(
+        dir = %dir.display(),
+        model_id,
+        "本地没有 laya，交给统一下载层从 ModelScope 取权重"
+    );
+    ensure_weights(&dir).await?;
+    Ok((dir, "download"))
+}
+
+/// 统一下载层的薄封装：只补上 laya 的错误上下文，下载/重试都在 `models::download` 里。
+async fn ensure_weights(dir: &Path) -> Result<()> {
+    crate::models::download::ensure_dir(
+        crate::models::mirrors::LAYA_MODEL_ID,
+        dir,
+        3,
+        looks_like_model,
+    )
+    .await
+    .with_context(|| "从 ModelScope 镜像下载 Laya 权重失败")
+}
+
+fn default_model_dir(model_id: &str) -> Result<PathBuf> {
+    let save_dir = crate::utils::get_default_save_dir()
+        .context("找不到模型保存目录（HOME / AHA_HOME 都没设）")?;
+    Ok(PathBuf::from(save_dir).join(model_id))
 }
 
 fn looks_like_model(path: &Path) -> bool {

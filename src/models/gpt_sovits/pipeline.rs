@@ -27,6 +27,7 @@ use crate::utils::audio_utils::{load_audio_use_hound, load_audio_use_symphonia, 
 use super::hubert::Hubert;
 use super::roberta::RobertaEncoder;
 use super::sovits::{Sovits, SynthOptions};
+use super::sovits_qnn::{self, SovitsQnn};
 use super::style::linear_spectrogram;
 use super::t2s::{GenOptions, Text2Semantic};
 use super::text_frontend::ZhFrontend;
@@ -67,6 +68,10 @@ struct RefFeat {
     /// 参考文本的 phones / BERT；空 = 没给 ref_text，走 ref-free
     text_ids: Vec<u32>,
     bert: Option<Tensor>,
+    /// QNN 图要的参考谱（前 704 个频点，行主序）+ 实际 bins/frames；只在启用 QNN 时填。
+    qnn_refer: Option<(Vec<f32>, usize, usize)>,
+    /// QNN 图要的说话人向量（v2Pro 的 eres2net 输出）。
+    qnn_sv: Option<Vec<f32>>,
 }
 
 pub struct GptSovitsModel {
@@ -80,13 +85,19 @@ pub struct GptSovitsModel {
     tokenizer: WordPieceTokenizer,
     t2s: Text2Semantic,
     sovits: Sovits,
+    /// SoVITS 解码链的 QNN 实现（`AHA_SOVITS_QNN` 指向 context binary 时才 Some）。
+    sovits_qnn: Option<SovitsQnn>,
     voices: HashMap<String, VoiceConfig>,
     default_voice: Option<String>,
     device: Device,
 }
 
 impl GptSovitsModel {
-    pub fn init(model_dir: impl AsRef<Path>, device: Option<&Device>, dtype: Option<DType>) -> Result<Self> {
+    pub fn init(
+        model_dir: impl AsRef<Path>,
+        device: Option<&Device>,
+        dtype: Option<DType>,
+    ) -> Result<Self> {
         let dir = model_dir.as_ref().to_path_buf();
         // 没显式指定时：编译了 cuda 且卡可用就用 GPU，否则 CPU
         let device = match device {
@@ -124,6 +135,23 @@ impl GptSovitsModel {
 
         let (voices, default_voice) = load_voices(&dir, &sovits)?;
 
+        // SoVITS 解码链的 QNN 版本：`AHA_SOVITS_QNN` 指向 context binary 时才启用，
+        // 打不开就退回 candle（只在 stderr 提示一次，不中断）。
+        let sovits_qnn = match SovitsQnn::from_env() {
+            Some(Ok(rt)) => {
+                tracing::info!(
+                    "SoVITS 解码链走 QNN（context binary {:?}）",
+                    std::env::var("AHA_SOVITS_QNN").unwrap_or_default()
+                );
+                Some(rt)
+            }
+            Some(Err(err)) => {
+                eprintln!("注意：AHA_SOVITS_QNN 打不开，SoVITS 仍走 candle。\n  原因：{err}");
+                None
+            }
+            None => None,
+        };
+
         Ok(Self {
             dir,
             ref_cache: std::sync::Mutex::new(None),
@@ -133,6 +161,7 @@ impl GptSovitsModel {
             tokenizer,
             t2s,
             sovits,
+            sovits_qnn,
             voices,
             default_voice,
             device,
@@ -183,7 +212,9 @@ impl GptSovitsModel {
         let cfg = self.resolve_voice(voice)?;
         // 参考特征只算一次，所有片段共用。
         let ref_feat = self.prepare_reference(cfg)?;
-        let clauses = self.frontend.split_for_streaming(text, MIN_STREAM_CLAUSE_CHARS);
+        let clauses = self
+            .frontend
+            .split_for_streaming(text, MIN_STREAM_CLAUSE_CHARS);
         if clauses.is_empty() {
             bail!("文本里没有可发音内容：{text:?}");
         }
@@ -232,9 +263,9 @@ impl GptSovitsModel {
             bail!("文本里没有可发音内容：{text:?}");
         }
         let text_ids = self.frontend.to_ids(&g2p.phones);
-        let bert_feat = self
-            .bert
-            .phone_level_feature(&g2p.norm_text, &self.tokenizer, &g2p.word2ph)?;
+        let bert_feat =
+            self.bert
+                .phone_level_feature(&g2p.norm_text, &self.tokenizer, &g2p.word2ph)?;
 
         // AR 的输入
         //
@@ -276,7 +307,40 @@ impl GptSovitsModel {
             speed: cfg.speed.unwrap_or(speed),
             ..Default::default()
         };
-        self.sovits.synthesize(&codes, &text_ids, &ref_feat.ge, &synth)
+        // 有 QNN context binary 且帧数在图上限内 → 解码链交给 HTP，否则 candle。
+        if let Some(qnn) = self.sovits_qnn.as_ref()
+            && let (Some((refer, bins, frames)), Some(sv)) =
+                (ref_feat.qnn_refer.as_ref(), ref_feat.qnn_sv.as_ref())
+        {
+            if qnn.can_run(codes.len()) {
+                match qnn.synthesize(&codes, &text_ids, refer, *bins, *frames, sv) {
+                    Ok(audio) => {
+                        // 图是定长 64 帧的，按真实帧数截断（25 Hz → 50 Hz，每帧 hop_length）
+                        let want = codes.len() * 2 * self.sovits.hop_length();
+                        let audio = if audio.len() > want {
+                            audio[..want].to_vec()
+                        } else {
+                            audio
+                        };
+                        let n = audio.len();
+                        tracing::info!("SoVITS 解码链走 QNN，{n} 个采样点");
+                        return Ok(Tensor::from_vec(audio, (1, 1, n), &self.device)?);
+                    }
+                    Err(err) => {
+                        tracing::warn!("SoVITS QNN 执行失败（{err:#}），回退 candle");
+                    }
+                }
+            } else {
+                tracing::debug!(
+                    "{} 帧 codes 超过 QNN 图上限 {}，回退 candle",
+                    codes.len(),
+                    sovits_qnn::NUM_CODES
+                );
+            }
+        }
+
+        self.sovits
+            .synthesize(&codes, &text_ids, &ref_feat.ge, &synth)
     }
 
     /// 参考音频（+ 参考文本）→ prompt codes / ge / 参考文本特征。带缓存。
@@ -287,6 +351,8 @@ impl GptSovitsModel {
                 ge: cached.ge.clone(),
                 text_ids: cached.text_ids.clone(),
                 bert: cached.bert.clone(),
+                qnn_refer: cached.qnn_refer.clone(),
+                qnn_sv: cached.qnn_sv.clone(),
             });
         }
         let mut feat = self.prepare_reference_uncached(&cfg.ref_audio)?;
@@ -300,10 +366,11 @@ impl GptSovitsModel {
         if let Some(text) = ref_text.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
             let g2p = self.frontend.g2p(text)?;
             feat.text_ids = self.frontend.to_ids(&g2p.phones);
-            feat.bert = Some(
-                self.bert
-                    .phone_level_feature(&g2p.norm_text, &self.tokenizer, &g2p.word2ph)?,
-            );
+            feat.bert = Some(self.bert.phone_level_feature(
+                &g2p.norm_text,
+                &self.tokenizer,
+                &g2p.word2ph,
+            )?);
             tracing::info!(
                 "参考文本 {} 个 phone，走提示音色模式（AR 的 x = 参考文本 + 目标文本）",
                 feat.text_ids.len()
@@ -314,6 +381,8 @@ impl GptSovitsModel {
             ge: feat.ge.clone(),
             text_ids: feat.text_ids.clone(),
             bert: feat.bert.clone(),
+            qnn_refer: feat.qnn_refer.clone(),
+            qnn_sv: feat.qnn_sv.clone(),
         });
         Ok(feat)
     }
@@ -321,11 +390,7 @@ impl GptSovitsModel {
     /// 参考音频路径（相对路径按模型目录解析）。
     fn resolve_ref_path(&self, ref_audio: &str) -> PathBuf {
         let p = PathBuf::from(ref_audio);
-        if p.is_absolute() {
-            p
-        } else {
-            self.dir.join(p)
-        }
+        if p.is_absolute() { p } else { self.dir.join(p) }
     }
 
     fn prepare_reference_uncached(&self, ref_audio: &str) -> Result<RefFeat> {
@@ -366,11 +431,33 @@ impl GptSovitsModel {
             None
         };
         let ge = self.sovits.ge(&spec, sv.as_ref())?;
+
+        // QNN 图自己算 ge（ref_enc 在里面），所以要留原始谱与 sv。
+        let (qnn_refer, qnn_sv) = if self.sovits_qnn.is_some() {
+            let dims = spec.dims();
+            let flat: Vec<f32> = spec.to_device(&cpu)?.flatten_all()?.to_vec1()?;
+            let (trimmed, bins, frames) = sovits_qnn::trim_spec(&flat, dims[1], dims[2]);
+            tracing::info!(
+                "参考谱 {}×{}，给 QNN 的是 {bins}×{frames}",
+                dims[1],
+                dims[2]
+            );
+            let sv_vec = match sv.as_ref() {
+                Some(t) => Some(t.to_device(&cpu)?.flatten_all()?.to_vec1()?),
+                None => None,
+            };
+            (Some((trimmed, bins, frames)), sv_vec)
+        } else {
+            (None, None)
+        };
+
         Ok(RefFeat {
             prompt,
             ge,
             text_ids: Vec::new(),
             bert: None,
+            qnn_refer,
+            qnn_sv,
         })
     }
 }
@@ -400,10 +487,9 @@ fn load_voices(
 ) -> Result<(HashMap<String, VoiceConfig>, Option<String>)> {
     let path = dir.join("voices.json");
     let mut voices: HashMap<String, VoiceConfig> = if path.is_file() {
-        let file: VoicesFile = serde_json::from_reader(std::io::BufReader::new(
-            std::fs::File::open(&path)?,
-        ))
-        .with_context(|| format!("解析 {}", path.display()))?;
+        let file: VoicesFile =
+            serde_json::from_reader(std::io::BufReader::new(std::fs::File::open(&path)?))
+                .with_context(|| format!("解析 {}", path.display()))?;
         file.voices
     } else {
         HashMap::new()

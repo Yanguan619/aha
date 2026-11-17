@@ -1,4 +1,4 @@
-﻿//! chinese-roberta-wwm-ext-large 的 encoder 部分（BERT 结构）。
+//! chinese-roberta-wwm-ext-large 的 encoder 部分（BERT 结构）。
 //!
 //! GPT-SoVITS 只用到 **第 21 层**（24 层里的第 22 层，对应 HF 的
 //! `output_hidden_states=True` 后 `hidden_states[-3]`），并丢掉首尾的 `[CLS]`/`[SEP]`，
@@ -68,9 +68,24 @@ impl Attention {
         let (b, s, _) = x.dims3()?;
         let shape = (b, s, self.heads, self.head_dim);
         // CUDA 的 matmul 只接受连续张量，transpose 后必须 contiguous
-        let q = self.q.forward(x)?.reshape(shape)?.transpose(1, 2)?.contiguous()?;
-        let k = self.k.forward(x)?.reshape(shape)?.transpose(1, 2)?.contiguous()?;
-        let v = self.v.forward(x)?.reshape(shape)?.transpose(1, 2)?.contiguous()?;
+        let q = self
+            .q
+            .forward(x)?
+            .reshape(shape)?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let k = self
+            .k
+            .forward(x)?
+            .reshape(shape)?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let v = self
+            .v
+            .forward(x)?
+            .reshape(shape)?
+            .transpose(1, 2)?
+            .contiguous()?;
 
         let scale = 1.0 / (self.head_dim as f64).sqrt();
         let scores = (q.matmul(&k.transpose(2, 3)?.contiguous()?)? * scale)?;
@@ -111,7 +126,11 @@ impl EncoderLayer {
                 cfg.hidden_size,
                 vb.pp("output.dense"),
             )?,
-            ln2: layer_norm(cfg.hidden_size, cfg.layer_norm_eps, vb.pp("output.LayerNorm"))?,
+            ln2: layer_norm(
+                cfg.hidden_size,
+                cfg.layer_norm_eps,
+                vb.pp("output.LayerNorm"),
+            )?,
         })
     }
 
@@ -146,7 +165,10 @@ impl RobertaEncoder {
 
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         for i in 0..cfg.num_hidden_layers {
-            layers.push(EncoderLayer::new(&cfg, base.pp("encoder").pp("layer").pp(i))?);
+            layers.push(EncoderLayer::new(
+                &cfg,
+                base.pp("encoder").pp("layer").pp(i),
+            )?);
         }
 
         Ok(Self {

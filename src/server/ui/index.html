@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>aha · 检测面板</title>
+<style>
+  :root{
+    --bg:#131116; --card:#1a181f; --raise:#211e27;
+    --border:#2b2833;
+    --fg:#dedce4; --dim:#9e9baa; --faint:#858290;
+    --accent:#5b8cff; --ok:#4cc38a; --warn:#f5a524; --bad:#f87171;
+    --glow:rgba(76,195,138,.5);
+    --mono:ui-monospace,"Cascadia Mono",Consolas,monospace;
+    --sans:"Microsoft YaHei",system-ui,sans-serif;
+  }
+  @media (prefers-color-scheme: light){
+    :root{ --bg:#f6f5f2; --card:#ffffff; --raise:#efede8;
+      --border:#e3e0d8;
+      --fg:#26241f; --dim:#5b574d; --faint:#6f6a60;
+      --accent:#2f5fd0; --ok:#177245; --warn:#b45309; --bad:#c62828;
+      --glow:transparent; }
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--fg);font:13px/1.55 var(--sans);padding:20px}
+  .wrap{max-width:1240px;margin:0 auto;display:flex;flex-direction:column;gap:12px;min-width:0}
+  .mono,.val{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+  /* 页头：唯一的强调面 */
+  .bar{display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+    background:var(--raise);border:1px solid var(--border);border-radius:10px;padding:12px 16px}
+  .brand{display:flex;align-items:center;gap:10px;min-width:0}
+  .logo{width:10px;height:10px;border-radius:3px;background:var(--accent);flex:none}
+  .brand .name{font-size:17px;font-weight:700;letter-spacing:.02em}
+  .brand .sub{color:var(--dim);font-size:12px;border-left:1px solid var(--border);padding-left:10px}
+  .meta{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-left:auto;color:var(--dim);font-size:12px}
+  .meta b{color:var(--fg);font-weight:500}
+  .meta .live{display:flex;align-items:center;gap:6px;color:var(--fg)}
+  .meta .ago.warn{color:var(--warn)}
+  .dot{width:8px;height:8px;border-radius:50%;flex:none;display:inline-block}
+  .dot.on{background:var(--ok);box-shadow:0 0 6px var(--glow)}
+  .dot.off{background:var(--bad)}
+
+  /* 指标区：两张曲线卡是主角，其余是安静仪器 */
+  .cards{display:grid;grid-template-columns:1.25fr 1.25fr 1fr;gap:12px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:8px;
+    padding:10px 14px 12px;min-width:0;display:flex;flex-direction:column}
+  .card.req{justify-content:center}
+  .card .label{color:var(--dim);font-size:12px}
+  .card .val{font-size:22px;line-height:1.25;margin-top:2px;margin-bottom:auto;white-space:nowrap}
+  .card .val small{font-size:12px;color:var(--dim);margin-left:2px}
+  .val.q{color:var(--accent)}
+  .sparkbox{position:relative;height:40px;margin-top:10px}
+  .spark{position:absolute;inset:0;width:100%;height:100%;display:block}
+  .base{stroke:var(--border);stroke-width:1;vector-effect:non-scaling-stroke}
+  .sdot{position:absolute;width:5px;height:5px;border-radius:50%;transform:translate(-50%,-50%)}
+
+  /* 三格状态条：并发 / 内存 / CPU */
+  .strip{grid-column:1/-1;display:flex;background:var(--card);border:1px solid var(--border);
+    border-radius:8px;overflow:hidden}
+  .stat{flex:1;display:flex;align-items:baseline;gap:8px;padding:7px 14px;min-width:0}
+  .stat .sl{color:var(--dim);font-size:12px;flex:none}
+  .stat .sv{margin-left:auto;font-size:17px;font-weight:600;white-space:nowrap}
+  .stat .sv small{font-size:12px;color:var(--dim);font-weight:400;margin-left:2px}
+  .stat + .stat{border-left:1px solid var(--border)}
+
+  /* 角色区：启用/未启用形态差 */
+  .roles{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+  .role{display:flex;align-items:center;gap:10px;min-width:0;border-radius:8px;padding:9px 12px;border:1px solid var(--border)}
+  .role.on{background:var(--card)}
+  .role.off{background:transparent;border-style:dashed}
+  .role .dot{width:7px;height:7px}
+  .role.on .dot{background:var(--ok)}
+  .role.off .dot{background:transparent;border:1.5px solid var(--faint)}
+  .rt{min-width:0;display:flex;flex-direction:column;line-height:1.45}
+  .rk{font-family:var(--mono);font-size:12px;color:var(--dim)}
+  .rm{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .role.on .rm{color:var(--fg)}
+  .role.off .rm{color:var(--faint)}
+
+  /* 表 */
+  .panel{background:var(--card);border:1px solid var(--border);border-radius:6px;overflow:hidden}
+  .ph{display:flex;align-items:baseline;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border)}
+  .ph h2{font-size:13px;font-weight:600}
+  .ph .cnt{color:var(--faint);font-size:12px}
+  .scroll{overflow-x:auto;position:relative}
+  .scroll.more::after{content:'';position:absolute;top:0;right:0;bottom:0;width:28px;pointer-events:none;
+    background:linear-gradient(to right,transparent,var(--card))}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{color:var(--dim);font-weight:500;text-align:left;padding:7px 14px;white-space:nowrap;
+    border-bottom:1px solid var(--border);background:var(--raise)}
+  td{padding:6px 14px;white-space:nowrap;border-bottom:1px solid var(--border)}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:var(--raise)}
+  td.num,th.num{text-align:right}
+  .rdot{display:inline-block;width:7px;height:7px;border-radius:50%}
+  .rdot.ok{background:var(--ok)} .rdot.bad{background:var(--bad)}
+  td.unmatched{color:var(--dim)}
+  .p95{display:inline-flex;align-items:center;gap:8px}
+  .mbar{width:44px;height:4px;border-radius:2px;background:var(--border);overflow:hidden;flex:none}
+  .mbar i{display:block;height:100%;background:var(--faint)}
+  .mbar.a i{background:var(--warn)} .mbar.r i{background:var(--bad)}
+  .g{color:var(--ok)} .a{color:var(--warn)} .r{color:var(--bad)}
+  .sc.marked::before{content:'';display:inline-block;width:6px;height:6px;background:currentColor;
+    margin-right:6px;vertical-align:1px}
+  .age{color:var(--faint);font-size:12px;margin-left:6px}
+  .path{max-width:360px;overflow:hidden;text-overflow:ellipsis}
+  @keyframes flash{0%{background:rgba(91,140,255,.16)}100%{background:transparent}}
+  tr.new td{animation:flash 1.2s ease-out}
+  .empty{color:var(--faint);padding:16px 14px}
+  .foot{color:var(--faint);font-size:12px;line-height:1.7;border-top:1px solid var(--border);padding-top:10px}
+
+  /* 离线降级 */
+  body.offline .cards .val,body.offline .strip .sv,body.offline td.num{color:var(--faint)}
+  body.offline .sparkbox{opacity:.45}
+  body.offline .mbar i{background:var(--faint)}
+  body.offline .rdot{background:var(--faint)}
+  body.offline .age{color:var(--faint)}
+
+  @media (prefers-reduced-motion: reduce){ tr.new td{animation:none} }
+
+  @media (max-width:900px){
+    body{padding:12px}
+    .cards{grid-template-columns:1fr 1fr}
+    .card.req{grid-column:1/-1}
+    .roles{grid-template-columns:repeat(2,1fr)}
+    .meta{margin-left:0}
+    .age{display:none}
+    .path{max-width:220px}
+  }
+  @media (max-width:520px){
+    .strip{flex-direction:column}
+    .stat + .stat{border-left:none;border-top:1px solid var(--border)}
+    .stat .sv{font-size:16px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="bar">
+    <div class="brand"><i class="logo"></i><b class="name">aha</b><span class="sub">推理服务 · 运行时</span></div>
+    <div class="meta" id="meta"></div>
+  </header>
+  <div class="cards" id="cards"></div>
+  <div class="roles" id="roles"></div>
+  <div class="panel">
+    <div class="ph"><h2>端点</h2><span class="cnt" id="routecnt"></span></div>
+    <div class="scroll" id="routes"></div>
+  </div>
+  <div class="panel">
+    <div class="ph"><h2>最近请求</h2><span class="cnt" id="recentcnt"></span></div>
+    <div class="scroll" id="recent"></div>
+  </div>
+  <footer class="foot">注：① 流式端点（<span class="mono">/audio/speech</span> 的 pcm、<span class="mono">/v1/chat/completions</span> 的 SSE）的耗时为服务端从收到请求到交出响应/首块的时间，不含客户端整段播放/接收；② QPS 与错误率由相邻两次采样的差值计算；③ p50/p95/p99 为直方图桶上界取整，颜色阈值：&gt;1000ms 琥珀、&gt;3000ms 红。</footer>
+</div>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const MAXP = 60;
+let lastData = null, lastOkAt = 0, fails = 0, online = false, booted = false;
+let prevReq = null, prevErr = null, prevT = null;
+const qpsHist = [], errHist = [];
+let seenReq = new Set();
+
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const num = (v, d=1) => (typeof v === 'number' && isFinite(v)) ? v.toFixed(d) : '—';
+const int = v => (typeof v === 'number' && isFinite(v)) ? v.toLocaleString('en-US') : '—';
+const dash = v => v === undefined || v === null || v === '' ? '—' : v;
+
+function fmtUptime(s){
+  if (typeof s !== 'number' || !isFinite(s)) return '—';
+  s = Math.floor(s);
+  const d = Math.floor(s/86400), h = Math.floor(s%86400/3600), m = Math.floor(s%3600/60), sec = s%60;
+  return (d ? d + 'd ' : '') + h + 'h ' + m + 'm ' + sec + 's';
+}
+function fmtClock(t){
+  const d = new Date(t * 1000), p = n => String(n).padStart(2, '0');
+  return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+function fmtAge(t){
+  const s = Math.max(0, Math.round(Date.now() / 1000 - t));
+  if (s < 2) return '刚刚';
+  if (s < 60) return s + ' 秒前';
+  return Math.floor(s / 60) + ' 分钟前';
+}
+
+const SW = 120, SH = 40;
+function spark(hist, col){
+  if (!hist.length)
+    return '<div class="sparkbox"><svg class="spark" viewBox="0 0 ' + SW + ' ' + SH + '" preserveAspectRatio="none">' +
+           '<line x1="0" y1="' + (SH - 2) + '" x2="' + SW + '" y2="' + (SH - 2) + '" class="base"/></svg></div>';
+  const max = Math.max.apply(null, hist.concat([1e-9]));
+  const n = hist.length;
+  const lastX = (n - 1) / (MAXP - 1) * SW;
+  const xy = hist.map((v, i) => [i / (MAXP - 1) * SW, 3 + (1 - v / max) * (SH - 7)]);
+  const pts = xy.map(p => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
+  const area = 'M0,' + SH + ' L' + pts.replace(/ /g, ' L') + ' L' + lastX.toFixed(1) + ',' + SH + ' Z';
+  const top = (xy[n - 1][1] / SH * 100).toFixed(1);
+  const left = (lastX / SW * 100).toFixed(1);
+  return '<div class="sparkbox"><svg class="spark" viewBox="0 0 ' + SW + ' ' + SH + '" preserveAspectRatio="none">' +
+    '<defs><linearGradient id="g' + (col === 'var(--accent)' ? 'q' : 'e') + '" x1="0" y1="0" x2="0" y2="1">' +
+    '<stop offset="0" style="stop-color:' + col + '" stop-opacity=".22"/>' +
+    '<stop offset="1" style="stop-color:' + col + '" stop-opacity="0"/></linearGradient></defs>' +
+    '<path d="' + area + '" fill="url(#g' + (col === 'var(--accent)' ? 'q' : 'e') + ')"/>' +
+    '<line x1="0" y1="' + (SH - 1.5) + '" x2="' + SW + '" y2="' + (SH - 1.5) + '" class="base"/>' +
+    '<polyline points="' + pts + '" fill="none" style="stroke:' + col + '" stroke-width="1.5" vector-effect="non-scaling-stroke"/>' +
+    '</svg><i class="sdot" style="background:' + col + ';left:' + left + '%;top:' + top + '%"></i></div>';
+}
+function pclass(ms){ return ms > 3000 ? 'r' : ms > 1000 ? 'a' : ''; }
+function sclass(s){ return s >= 500 ? 'r' : s >= 400 ? 'a' : 'g'; }
+
+function computeRates(d){
+  const now = Date.now() / 1000;
+  let qps = null, err = null;
+  if (prevT !== null && now > prevT) {
+    const dq = d.totals.requests - prevReq;
+    qps = Math.max(0, dq / (now - prevT));
+    err = dq > 0 ? Math.max(0, d.totals.errors - prevErr) / dq * 100 : 0;
+  }
+  prevReq = d.totals.requests; prevErr = d.totals.errors; prevT = now;
+  if (qps === null) { qpsHist.length = 0; errHist.length = 0; return { qps: null, err: null }; }
+  qpsHist.push(qps); if (qpsHist.length > MAXP) qpsHist.shift();
+  errHist.push(err); if (errHist.length > MAXP) errHist.shift();
+  return { qps, err };
+}
+
+function renderStatus(d){
+  const ago = lastOkAt ? Math.max(0, Math.round((Date.now() - lastOkAt) / 1000)) : null;
+  const sv = d && d.server || {};
+  $('meta').innerHTML =
+    '<span class="live"><i class="dot ' + (online ? 'on' : 'off') + '"></i>' + (online ? '在线' : '离线') + '</span>' +
+    '<span>pid <b class="mono">' + int(sv.pid) + '</b></span>' +
+    '<span>端口 <b class="mono">' + dash(sv.port) + '</b></span>' +
+    '<span>运行 <b class="mono">' + fmtUptime(sv.uptime_s) + '</b></span>' +
+    '<span>版本 <b class="mono">' + esc(dash(sv.version)) + '</b></span>' +
+    '<span class="ago' + (online && ago !== null && ago >= 5 ? ' warn' : '') + '">' +
+    (online ? '更新于 ' : '最后更新于 ') + (ago === null ? '—' : ago + ' 秒前') + '</span>';
+  document.body.classList.toggle('offline', !online);
+}
+
+function renderCards(d, rates){
+  const t = d && d.totals || {}, p = d && d.process || {};
+  const card = (label, val, extra, cls) =>
+    '<div class="card' + (cls === 'req' ? ' req' : '') + '"><div class="label">' + label + '</div>' +
+    '<div class="val' + (cls && cls !== 'req' ? ' ' + cls : '') + '">' + val + '</div>' + (extra || '') + '</div>';
+  const stat = (label, val) =>
+    '<div class="stat"><span class="sl">' + label + '</span><span class="sv mono">' + val + '</span></div>';
+  const eLast = errHist.length ? errHist[errHist.length - 1] : 0;
+  const eCol = eLast >= 50 ? 'var(--bad)' : eLast > 0 ? 'var(--warn)' : 'var(--dim)';
+  const eCls = !rates || rates.err === null ? '' : rates.err >= 50 ? 'r' : rates.err > 0 ? 'a' : '';
+  $('cards').innerHTML =
+    card('QPS', rates && rates.qps !== null ? num(rates.qps, 2) : '—', spark(qpsHist, 'var(--accent)'), 'q') +
+    card('错误率', rates && rates.err !== null ? num(rates.err, 2) + '<small> %</small>' : '—', spark(errHist, eCol), eCls) +
+    card('总请求', int(t.requests), '', 'req') +
+    '<div class="strip">' +
+    stat('当前并发', int(t.inflight)) +
+    stat('内存', typeof p.mem_mb === 'number' ? num(p.mem_mb) + '<small> MB</small>' : '—') +
+    stat('CPU', typeof p.cpu_pct === 'number' ? num(p.cpu_pct) + '<small> %</small>' : '—') +
+    '</div>';
+}
+
+function renderRoles(d){
+  const models = (d && Array.isArray(d.models)) ? d.models : [];
+  const byKey = {};
+  models.forEach(m => { if (m && m.key) byKey[m.key] = m.model; });
+  const names = { asr: '语音识别', tts: '语音合成', system1: '决策', vla: '动作' };
+  $('roles').innerHTML = ['asr', 'tts', 'system1', 'vla'].map(k => {
+    const on = byKey[k] !== undefined;
+    const model = on ? names[k] + ' · ' + byKey[k] : '未启用';
+    return '<div class="role ' + (on ? 'on' : 'off') + '"><span class="dot"></span>' +
+      '<span class="rt"><span class="rk">' + k + '</span>' +
+      '<span class="rm" title="' + (on ? esc(model) : '') + '">' + (on ? esc(model) : '未启用') + '</span></span></div>';
+  }).join('');
+}
+
+function renderRoutes(d){
+  const rs = (d && Array.isArray(d.routes)) ? d.routes.slice() : [];
+  if (!rs.length) { $('routes').innerHTML = '<div class="empty">暂无端点数据</div>'; $('routecnt').textContent = ''; return; }
+  rs.sort((a, b) => (b.requests || 0) - (a.requests || 0));
+  $('routecnt').textContent = rs.length + ' 条路由';
+  const th = '<tr><th></th><th>路由</th><th class="num">请求</th><th class="num">错误</th><th class="num">p50</th><th class="num">p95</th><th class="num">p99</th><th class="num">最大</th><th class="num">最近耗时</th><th class="num">并发</th></tr>';
+  const tr = r => {
+    const cls = pclass(r.p95_ms);
+    const w = Math.min(100, Math.max(0, r.p95_ms) / 3000 * 100).toFixed(0);
+    return '<tr><td><i class="rdot ' + (r.errors > 0 ? 'bad' : 'ok') + '"></i></td>' +
+    '<td class="mono' + (r.route === '(unmatched)' ? ' unmatched' : '') + '"' + (r.route === '(unmatched)' ? ' title="未匹配到任何路由"' : '') + '>' + esc(r.route) + '</td>' +
+    '<td class="num mono">' + int(r.requests) + '</td>' +
+    '<td class="num mono' + (r.errors > 0 ? ' r' : '') + '">' + int(r.errors) + '</td>' +
+    '<td class="num mono">' + num(r.p50_ms, 0) + '</td>' +
+    '<td class="num mono"><span class="p95"><span class="mbar ' + cls + '" title="p95 ' + num(r.p95_ms, 0) + ' ms"><i style="width:' + w + '%"></i></span>' +
+    '<span class="mono ' + cls + '">' + num(r.p95_ms, 0) + '</span></span></td>' +
+    '<td class="num mono ' + cls + '">' + num(r.p99_ms, 0) + '</td>' +
+    '<td class="num mono">' + num(r.max_ms, 0) + '</td>' +
+    '<td class="num mono">' + num(r.last_ms, 0) + '</td>' +
+    '<td class="num mono">' + int(r.inflight) + '</td></tr>';
+  };
+  $('routes').innerHTML = '<table><thead>' + th + '</thead><tbody>' + rs.map(tr).join('') + '</tbody></table>';
+}
+
+function renderRecent(d){
+  const rs = (d && Array.isArray(d.recent)) ? d.recent.slice(0, 30) : [];
+  if (!rs.length) { $('recent').innerHTML = '<div class="empty">暂无请求记录</div>'; $('recentcnt').textContent = ''; return; }
+  $('recentcnt').textContent = '显示 ' + rs.length + ' 条';
+  const tr = r => {
+    const isNew = booted && !seenReq.has(r.t);
+    const marked = typeof r.status === 'number' && r.status >= 400;
+    return '<tr' + (isNew ? ' class="new"' : '') + '>' +
+      '<td class="num mono">' + fmtClock(r.t) + '<span class="age">' + fmtAge(r.t) + '</span></td>' +
+      '<td class="mono">' + esc(r.method) + '</td>' +
+      '<td class="mono path" title="' + esc(r.path) + '">' + esc(r.path) + '</td>' +
+      '<td class="mono"><span class="sc ' + sclass(r.status) + (marked ? ' marked' : '') + '">' + (r.status === undefined ? '—' : r.status) + '</span></td>' +
+      '<td class="num mono ' + pclass(r.ms) + '">' + num(r.ms, 0) + '</td></tr>';
+  };
+  $('recent').innerHTML = '<table><thead><tr><th class="num">时间</th><th>方法</th><th>路径</th><th>状态</th><th class="num">耗时 (ms)</th></tr></thead><tbody>' +
+    rs.map(tr).join('') + '</tbody></table>';
+  seenReq = new Set(rs.map(r => r.t));
+}
+
+function render(d, rates){
+  renderStatus(d); renderCards(d, rates); renderRoles(d); renderRoutes(d); renderRecent(d);
+  updScroll();
+}
+function updScroll(){
+  ['routes', 'recent'].forEach(id => {
+    const el = $(id);
+    el.classList.toggle('more', el.scrollWidth > el.clientWidth + 2 &&
+      el.scrollLeft + el.clientWidth < el.scrollWidth - 2);
+  });
+}
+$('routes').onscroll = updScroll;
+$('recent').onscroll = updScroll;
+
+async function tick(){
+  try {
+    const r = await fetch('/metrics', { cache: 'no-store' });
+    if (!r.ok) throw new Error('http ' + r.status);
+    const d = await r.json();
+    fails = 0; online = true; lastOkAt = Date.now(); lastData = d;
+    render(d, computeRates(d));
+    booted = true;
+  } catch (e) {
+    fails++;
+    if (fails >= 3) online = false;
+    render(lastData, null);
+  }
+  setTimeout(tick, 1000);
+}
+
+tick();
+</script>
+</body>
+</html>

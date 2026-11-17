@@ -23,6 +23,7 @@ aha [COMMAND] [OPTIONS]
 | `--onnx-path <ONNX_PATH>` | 本地 ONNX 模型权重 （使用ONNX模型时必选） | - |
 | `--config-path <ONNX_PATH>` | GGUF/ONNX 需要的额外配置路径(可选) | - |
 | `--no-warmup` | 关掉启动预热（默认开）。预热会在端口开之前空跑一遍每个角色，把首次推理的一次性开销提前 | 关 |
+| `--provider <PROVIDER>` | SenseVoice / Kokoro 用的 ONNX Runtime execution provider：`cpu`、`qnn`、`nnapi`、`cuda`、`coreml`、`trt`、`rknn`、`openvino`，`npu`（用探测建议的那个），或 `plugin[:<conf>]`（加载运行时 plugin EP，比如高通 QNN plugin）。运行时没编这个 EP 时会静默退回 CPU。不传则读环境变量 `AHA_PROVIDER`。详见 [NPU 加速](./npu.zh-CN.md) | auto |
 | `-h, --help` | 显示帮助信息 | - |
 | `-V, --version` | 显示版本号 | - |
 
@@ -31,7 +32,8 @@ aha [COMMAND] [OPTIONS]
 ### cli - 下载模型并启动服务
 
 下载指定的模型并启动 HTTP 服务。
-下载仅支持safetensors格式模型, GGUF/ONNX模型必须指定本地文件路径
+没给 `--weight-path` 时会从 ModelScope 自动下载；`qwen3.5-gguf` 默认下 0.8B Q4_K_M
+（也可以继续用 `--gguf-path` 指定本地文件），ONNX 模型仍必须指定本地路径。
 
 **语法：**
 ```bash
@@ -137,8 +139,9 @@ aha run -m qwen3.5-gguf -i 提取图片中的文本 -i https://ai.bdstatic.com/f
 ### serv - 启动服务
 
 使用指定模型启动 HTTP 服务。
-safetensors模型`--weight-path` 是可选的 - 如果不指定，默认使用 `~/.aha/{model_id}`。
-GGUF/ONNX模型必须指定本地文件路径
+safetensors模型`--weight-path` 是可选的 - 如果不指定，默认使用 `~/.aha/{model_id}`，
+首次启动会从 ModelScope 自动下载（桌宠/本地转换的模型走各自的镜像仓库）。
+`qwen3.5-gguf` 不给 `--gguf-path` 时自动下 0.8B Q4_K_M；ONNX 模型必须指定本地文件路径。
 
 **语法：**
 ```bash
@@ -342,6 +345,86 @@ aha list -j
 - `image`：图像处理模型
 - `tts`：语音生成
 
+### npu - 探测本机的 NPU 运行时
+
+报告这台机器能给 ONNX Runtime 提供什么：高通 QNN（Hexagon HTP）、NNAPI，以及可执行文件旁边那套 ONNX Runtime 到底编了哪些 execution provider。也会顺带告诉这个 `aha` 构建能不能用 provider。
+
+**语法：**
+```bash
+aha npu [OPTIONS]
+```
+
+**选项：**
+
+| 选项 | 说明 | 默认值 |
+|------|------|--------|
+| `-j, --json` | 以 JSON 格式输出 | false |
+| `-r, --recommended` | 只输出建议的 `--provider` 值（没有可用方案时是 `cpu`） | false |
+
+**示例：**
+
+```bash
+# 完整报告
+aha npu
+
+# 只取要传给 --provider 的值
+aha npu -r
+
+# 指向自编的 ONNX Runtime
+AHA_NPU_LIB_DIR=/data/local/tmp/qnn-ort aha npu --json
+```
+
+**输出**：逐个列出找到的运行时及其路径、从 `libQnnHtpV{N}Stub.so` 解析出的 HTP 版本、本地 ONNX Runtime 内嵌的 execution provider，以及会出什么事（缺 `libQnnSystem.so`、ONNX Runtime 没编 QNN EP、NNAPI 服务已死）。
+
+只有 SenseVoice 和 Kokoro 走 ONNX Runtime，所以只有这两个模型能被 `--provider` 加速。完整说明和需要手工编译的部分见 [NPU 加速](./npu.zh-CN.md)。
+
+### qnn - 检查/执行一个 QAIRT 模型
+
+直接加载一个 `.bin`（由 `scripts/qnn_convert.py --stage` 产出，或任何 QAIRT 转换出来的 context binary），或者一个模型库 `lib<name>.so`（`qnn_convert.py --build-so` 的产物，权重在同目录的 `<name>.bin` 里），把里面的图和张量读出来，可选地跑一次。**它不认识任何具体模型**：图名、张量名、类型、维度全从二进制里读，所以任何模型转出来的产物都能用同一条命令验证。
+
+**语法：**
+```bash
+aha qnn --context <BIN> [OPTIONS]
+aha qnn --model <libNAME.so> [OPTIONS]
+```
+
+**选项：**
+
+| 选项 | 说明 | 默认值 |
+|------|------|--------|
+| `--context <BIN>` | context binary 路径（与 `--model` 二选一） | — |
+| `--model <SO>` | 模型库路径（与 `--context` 二选一）；权重是同目录的 `<name>.bin` | — |
+| `--backend <LIB>` | HTP 后端库 | `libQnnHtp.so` |
+| `--system <LIB>` | QNN system 库（读元数据用，仅 `--context` 需要） | `libQnnSystem.so` |
+| `--info` | 只打印图和张量，不执行 | false |
+| `--graph <N>` | 跑第几张图 | 0 |
+| `--input <NAME=PATH>` | 给指定张量喂原始字节，可重复；不给就补零 | — |
+| `--out-dir <DIR>` | 把每个输出张量写成 `<名字>.bin` | — |
+
+**示例：**
+
+```bash
+# 先看这个 bin 里有什么
+aha qnn --context vitsS_ctx.bin --info
+
+# 用真实输入跑一次，输出落盘
+aha qnn --context vitsS_ctx.bin \
+  --input codes=codes.raw --input text=text.raw \
+  --input refer=refer.raw --input sv_emb=sv_emb.raw \
+  --out-dir out
+
+# float32 IO 的图（比如 GPT-SoVITS 的 SoVITS）走模型库
+aha qnn --model libvitsF.so --info
+```
+
+**进程内跑不动时自动回退**：HTP v81 上有些图（IO 是 float32 的 SoVITS 就是）执行时会被 DSP 拒绝，返回 `Qnn_Common_Error_General (1100)`。这种时候 `aha` 会把同样的输入写成 raw 文件 + `input_list.txt`，在产物目录里调用 SDK 自带的 `qnn-net-run`（`--model` 或 `--retrieve_context`），再把 `Result_0/<张量名>.raw` 读回内存，所以命令本身仍然是成功的（回退产物与 `qnn-net-run` 直跑的结果 md5 一致）。前提是产物目录里有 `qnn-net-run`（`scripts/qnn_convert.py --stage` 会带上它），也可以用 `AHA_QNN_NETRUN=<路径>` 指定；`AHA_QNN_NETRUN=0` 关掉回退，用来判断问题出在垫片还是 QNN 运行库。
+
+被 1100 拒过一次之后，同一个进程里的后续调用会直接走回退；`AHA_QNN_SKIP_INPROCESS=1` 连第一次尝试都跳过（省约 0.6 s）。
+
+**用 context binary 还是模型库**：两者都能跑，但模型库路径**每个进程都要 compose + finalize 一次图**，实测 SoVITS 约 **737 s**；同一份图的 context binary 加载只要约 0.7 s、整条链路约 **1.8 s**。所以模型库留给转换/校验（`--info`、喂输入验形状），业务运行请用 context binary（`qnn-context-binary-generator` 生成一次即可）。
+
+**前提**：`aha` 可执行文件旁边要有 `libaha_qnn.so`（`scripts/build_android.py` 在设了 `QNN_SDK_ROOT` 时会自动编译并放在一起），以及设备上的 `libQnnHtp.so` / `libQnnSystem.so`。缺垫片时这条子命令会直接说明缺什么，不影响其它功能。
+
 ## 常见使用场景
 
 ### 场景 1：快速启动推理服务
@@ -439,5 +522,6 @@ aha --version
 ## 另见
 
 - [快速入门](./getting-started.zh-CN.md) - 快速入门指南
+- [NPU 加速](./npu.zh-CN.md) - `--provider`、`aha npu`，以及 NPU 到底能跑什么
 - [API 文档](./api.zh-CN.md) - REST API 参考
 - [支持的模型](./supported-tools.zh-CN.md) - 可用模型

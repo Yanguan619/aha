@@ -111,8 +111,11 @@ cargo build --release --features sherpa       # both
 > **sherpa-onnx note**: the `sherpa-*` features link the sherpa-onnx **shared**
 > library, so the produced binary needs `onnxruntime.dll` and `sherpa-onnx-*.dll`
 > next to it (they are copied into `target/<profile>/` by the build script).
-> Models for these two backends are **not** hosted on ModelScope — pass a local
-> directory with `--weight-path`.
+> Weights for these two backends come from **ModelScope mirrors** (SenseVoice:
+> `WEAAEW/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17`, Kokoro:
+> `journey0ad/kokoro-multi-lang-v1_1`). `aha download`, or the first `serv`/`cli`
+> start, fetches them into `~/.aha/<model-id>`; pass `--weight-path` to reuse an
+> existing directory.
 >
 > Do **not** add `sherpa-onnx` to `[dependencies]` by hand: the crate defaults to
 > `static`, which collides with the protobuf embedded in `sentencepiece` (LNK2005).
@@ -138,6 +141,31 @@ fetch `sherpa-onnx-v<ver>-android.tar.bz2` by hand and set `SHERPA_ONNX_ARCHIVE_
 Set `HOME` and `AHA_HOME` to a writable directory before running: Android's `home_dir()`
 is `/`, so the default `~/.aha` is not writable.
 
+**Embedding it in an app**: [`aha-ffi`](aha-ffi) is a C ABI (`.so` + header) and it exports the
+downloader too: `aha_model_download(model_id, save_dir, retries, on_progress, user, err)`
+(returns 0 / -1 / -2, `-2` = cancelled via `aha_model_download_cancel`), `aha_model_dir`, and the
+polling counters `aha_model_download_done/total/files_done/files_total`. The mirror table lives in
+[`src/models/mirrors.rs`](src/models/mirrors.rs), so the host passes the same `-m` id it would give
+the CLI; the JNI shim and Kotlin wrapper are in [`aha-ffi/examples/android/`](aha-ffi/examples/android/).
+
+**NPU (Hexagon HTP / NNAPI)**
+
+Phones do have an NPU, and aha can reach it — but only for the models that run through
+ONNX Runtime (SenseVoice and Kokoro). Everything candle-based (LLMs, VLMs, OCR) stays on
+the CPU; there is no mobile NPU backend for candle.
+
+```bash
+aha npu                 # what this device offers: QNN libs, HTP version, NNAPI, ORT EPs
+aha npu -r              # just the value to pass to --provider
+aha cli -m SenseVoice --provider qnn
+```
+
+One caveat matters in practice: the ONNX Runtime inside the sherpa-onnx Android prebuilt
+package only contains the CPU and NNAPI execution providers, so `--provider qnn` falls back
+to CPU with it. Really using the HTP means building ONNX Runtime with `--use_qnn` and
+building sherpa-onnx against it (`SHERPA_ONNX_LIB_DIR`); the recipe is in
+[`docs/npu.md`](docs/npu.md). On Android 16/17 NNAPI is gone anyway — QNN is the only path.
+
 ### CLI Quick Reference
 
 ```bash
@@ -159,6 +187,9 @@ aha run -m all-minilm-l6-v2 -i "Rust embedding test" --weight-path D:\model_down
 
 # Start service only (model already downloaded)
 aha serv -m Qwen/Qwen3-ASR-0.6B -p 10100
+
+# What inference backends this machine has (NPU / QNN / NNAPI)
+aha npu
 ```
 
 ### Chat
@@ -189,6 +220,7 @@ curl http://localhost:10100/v1/chat/completions \
 | [CLI Reference](docs/cli.md) | Command-line interface |
 | [API Documentation](docs/api.md) | Library & REST API |
 | [Supported Models](docs/supported-models.md) | Available AI models |
+| [NPU Acceleration](docs/npu.md) | Phone NPUs, `--provider`, `aha npu` |
 | [Concepts](docs/concepts.md) | Architecture & design |
 | [Development](docs/development.md) | Contributing guide |
 | [Changelog](docs/changelog.md) | Version history |

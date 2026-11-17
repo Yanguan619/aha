@@ -203,7 +203,10 @@ fn is_control(ch: char) -> bool {
 
 fn is_punctuation(ch: char) -> bool {
     let c = ch as u32;
-    if (33..=47).contains(&c) || (58..=64).contains(&c) || (91..=96).contains(&c) || (123..=126).contains(&c)
+    if (33..=47).contains(&c)
+        || (58..=64).contains(&c)
+        || (91..=96).contains(&c)
+        || (123..=126).contains(&c)
     {
         return true;
     }

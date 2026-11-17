@@ -1,6 +1,6 @@
 [package]
 name = "aha"
-version = "0.2.6"
+version = "0.3.0"
 edition = "2024"
 repository = "https://github.com/jhqxxx/aha"
 license = "Apache-2.0"
@@ -26,7 +26,7 @@ num = "0.4.3"
 minijinja = "2.12.0"
 tokenizers = "0.22.1"
 uuid = { version = "1.18.1", features = ["v4"] }
-axum = { version = "0.8.8", features = ["multipart"] }
+axum = { version = "0.8.8", features = ["multipart", "ws"] }
 futures-util = "0.3.31"
 async-stream = "0.3.6"
 tower-http = { version = "0.6.7", features = ["trace"] }
@@ -60,6 +60,8 @@ rand = "0.10.1"
 esaxx-rs = "0.1.10"
 # 日志宏（sherpa 模型下载进度 / 桌宠端点）；没装 subscriber 时是 no-op。
 tracing = "0.1"
+# 仅在设置了 RUST_LOG 时才启用（见 cli::init_tracing），平时不改变输出。
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # sherpa-onnx（ONNX Runtime 绑定）：SenseVoice ASR / Kokoro TTS。
 #
 # **不要直接往这里加**——依赖本身由 `onnx-runtime` feature 打开（见 [features]）：
@@ -74,11 +76,20 @@ jieba-rs = { version = "0.11", optional = true, default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 # --parent-pid watchdog: 桌宠退出时跟着收工（移植自旧 asr/tts/laya-route）。
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_ProcessStatus",
+] }
 
 # Linux / Android 的父进程看门狗只需要 kill(2)；libc 本来就在依赖树里（transitive）。
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+# `src/server/mod.rs` 的 /realtime 集成测试要当真正的 WebSocket 客户端。
+# 版本跟着 axum 的 ws feature 走（同一条依赖，不会再下一份）。
+tokio-tungstenite = "0.29"
 
 
 [features]
@@ -141,3 +152,9 @@ required-features = ["vla"]
 # cargo build -p aha-ffi instead.
 [workspace]
 members = ["aha-ffi"]
+
+# 依赖用优化后的机器码编译，自己的 crate 仍是 0 级（保留调试信息、增量编译快）。
+# 不加这段的话，debug 构建里 candle 的矩阵运算也未优化：/realtime 一轮
+# 从 ASR 到首音要 160 秒（release 只要 0.9 秒），排查问题时会被误导。
+[profile.dev.package."*"]
+opt-level = 3

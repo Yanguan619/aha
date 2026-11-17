@@ -13,7 +13,6 @@ use candle_core::Tensor;
 use candle_nn::Module as _;
 use candle_nn::{Conv1d, Conv1dConfig, LayerNorm, VarBuilder, conv1d};
 
-
 /// 诊断用：把张量写成裸 f32 到 `<AHA_GPT_SOVITS_DIR>/ref_dump/rust_<name>.bin`
 pub fn dump_tensor(name: &str, t: &Tensor) -> Result<()> {
     if std::env::var("AHA_GSV_DUMP").is_err() {
@@ -239,7 +238,13 @@ impl VitsFfn {
         vb: VarBuilder,
     ) -> Result<Self> {
         Ok(Self {
-            conv_1: conv1d(in_c, filter_c, kernel_size, Conv1dConfig::default(), vb.pp("conv_1"))?,
+            conv_1: conv1d(
+                in_c,
+                filter_c,
+                kernel_size,
+                Conv1dConfig::default(),
+                vb.pp("conv_1"),
+            )?,
             conv_2: conv1d(
                 filter_c,
                 out_c,
@@ -307,7 +312,11 @@ impl VitsEncoder {
                 window_size,
                 layer,
             )?);
-            ln1.push(vits_layer_norm(hidden, eps, vb.pp(format!("norm_layers_1.{}", i)))?);
+            ln1.push(vits_layer_norm(
+                hidden,
+                eps,
+                vb.pp(format!("norm_layers_1.{}", i)),
+            )?);
             ffn.push(VitsFfn::new(
                 hidden,
                 hidden,
@@ -315,7 +324,11 @@ impl VitsEncoder {
                 kernel_size,
                 vb.pp(format!("ffn_layers.{}", i)),
             )?);
-            ln2.push(vits_layer_norm(hidden, eps, vb.pp(format!("norm_layers_2.{}", i)))?);
+            ln2.push(vits_layer_norm(
+                hidden,
+                eps,
+                vb.pp(format!("norm_layers_2.{}", i)),
+            )?);
         }
         Ok(Self {
             attn,
@@ -374,7 +387,13 @@ impl Mrte {
             c_pre: conv1x1(content_channels, hidden, vb.pp("c_pre"))?,
             text_pre: conv1x1(content_channels, hidden, vb.pp("text_pre"))?,
             c_post: conv1x1(hidden, out_channels, vb.pp("c_post"))?,
-            attn: RelMultiHeadAttention::new(hidden, hidden, heads, None, vb.pp("cross_attention"))?,
+            attn: RelMultiHeadAttention::new(
+                hidden,
+                hidden,
+                heads,
+                None,
+                vb.pp("cross_attention"),
+            )?,
         })
     }
 
@@ -396,9 +415,11 @@ impl Mrte {
         let ssl_enc = self.c_pre.forward(&(ssl * ssl_mask)?)?;
         let text_enc = self.text_pre.forward(&(text * text_mask)?)?;
 
-        let x = self
-            .attn
-            .forward(&(ssl_enc.clone() * ssl_mask)?, &(text_enc * text_mask)?, Some(&attn_mask))?;
+        let x = self.attn.forward(
+            &(ssl_enc.clone() * ssl_mask)?,
+            &(text_enc * text_mask)?,
+            Some(&attn_mask),
+        )?;
         // 注意力输出 + c_pre(ssl) + ge（ge 是 (B,512,1)，广播到时间维）
         // ge 是 (B, C, 1)，要广播到时间维
         let x = (&x + &ssl_enc)?.broadcast_add(ge)?;

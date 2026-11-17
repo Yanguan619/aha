@@ -1,4 +1,4 @@
-﻿//! chinese-hubert-base（HuBERT，wav2vec2 结构）的 candle 实现。
+//! chinese-hubert-base（HuBERT，wav2vec2 结构）的 candle 实现。
 //!
 //! 与 transformers 4.51 的 `HubertModel` 严格对齐：
 //!
@@ -83,9 +83,24 @@ impl Attention {
         let (b, s, _) = x.dims3()?;
         let shape = (b, s, self.heads, self.head_dim);
         // CUDA 的 matmul 只接受连续张量，transpose 后必须 contiguous
-        let q = self.q.forward(x)?.reshape(shape)?.transpose(1, 2)?.contiguous()?;
-        let k = self.k.forward(x)?.reshape(shape)?.transpose(1, 2)?.contiguous()?;
-        let v = self.v.forward(x)?.reshape(shape)?.transpose(1, 2)?.contiguous()?;
+        let q = self
+            .q
+            .forward(x)?
+            .reshape(shape)?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let k = self
+            .k
+            .forward(x)?
+            .reshape(shape)?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let v = self
+            .v
+            .forward(x)?
+            .reshape(shape)?
+            .transpose(1, 2)?
+            .contiguous()?;
 
         let scale = 1.0 / (self.head_dim as f64).sqrt();
         let scores = (q.matmul(&k.transpose(2, 3)?.contiguous()?)? * scale)?;
@@ -114,7 +129,11 @@ impl EncoderLayer {
                 q: candle_nn::linear(cfg.hidden_size, cfg.hidden_size, vb.pp("attention.q_proj"))?,
                 k: candle_nn::linear(cfg.hidden_size, cfg.hidden_size, vb.pp("attention.k_proj"))?,
                 v: candle_nn::linear(cfg.hidden_size, cfg.hidden_size, vb.pp("attention.v_proj"))?,
-                o: candle_nn::linear(cfg.hidden_size, cfg.hidden_size, vb.pp("attention.out_proj"))?,
+                o: candle_nn::linear(
+                    cfg.hidden_size,
+                    cfg.hidden_size,
+                    vb.pp("attention.out_proj"),
+                )?,
                 heads: cfg.num_attention_heads,
                 head_dim: cfg.hidden_size / cfg.num_attention_heads,
             },
@@ -129,7 +148,11 @@ impl EncoderLayer {
                 cfg.hidden_size,
                 vb.pp("feed_forward.output_dense"),
             )?,
-            ln2: layer_norm(cfg.hidden_size, cfg.layer_norm_eps, vb.pp("final_layer_norm"))?,
+            ln2: layer_norm(
+                cfg.hidden_size,
+                cfg.layer_norm_eps,
+                vb.pp("final_layer_norm"),
+            )?,
         })
     }
 
@@ -172,9 +195,21 @@ impl Hubert {
             };
             let conv_vb = vb.pp("feature_extractor.conv_layers").pp(i);
             let conv = if cfg.conv_bias {
-                conv1d(in_c, conv_dim[i], cfg.conv_kernel[i], conv_cfg, conv_vb.pp("conv"))?
+                conv1d(
+                    in_c,
+                    conv_dim[i],
+                    cfg.conv_kernel[i],
+                    conv_cfg,
+                    conv_vb.pp("conv"),
+                )?
             } else {
-                conv1d_no_bias(in_c, conv_dim[i], cfg.conv_kernel[i], conv_cfg, conv_vb.pp("conv"))?
+                conv1d_no_bias(
+                    in_c,
+                    conv_dim[i],
+                    cfg.conv_kernel[i],
+                    conv_cfg,
+                    conv_vb.pp("conv"),
+                )?
             };
             // transformers 4.51: feat_extract_norm=="group" 时只有第 0 层是 GroupNorm，
             // 其余层是纯 Conv+激活（这正是这份权重里只有一层 layer_norm 的原因）
@@ -266,7 +301,10 @@ impl Hubert {
             let std = (v.iter().map(|a| (*a as f64 - mean).powi(2)).sum::<f64>() / n).sqrt();
             let min = v.iter().cloned().fold(f32::INFINITY, f32::min);
             let max = v.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-            eprintln!("    [hubert] {label:<14} dims={:?} mean={mean:+.4} std={std:.4} min={min:+.3} max={max:+.3}", x.dims());
+            eprintln!(
+                "    [hubert] {label:<14} dims={:?} mean={mean:+.4} std={std:.4} min={min:+.3} max={max:+.3}",
+                x.dims()
+            );
         }
         Ok(())
     }
@@ -285,7 +323,9 @@ impl Hubert {
                 x = norm.forward(&x)?;
             }
             if let Some(ln) = &layer.layer_norm {
-                x = ln.forward(&x.transpose(1, 2)?.contiguous()?)?.transpose(1, 2)?;
+                x = ln
+                    .forward(&x.transpose(1, 2)?.contiguous()?)?
+                    .transpose(1, 2)?;
             }
             x = Activation::Gelu.forward(&x)?;
         }

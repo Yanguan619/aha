@@ -1,11 +1,20 @@
 pub mod audio_utils;
 pub mod http;
+pub mod npu;
 
-/// 解析 `--device`：`auto`（None，由模型自己决定）/ `cpu` / `cuda`。
+/// 解析 `--device`：`auto`（None，由模型自己决定）/ `cpu` / `cuda` / `npu`。
+///
+/// `npu` 是给手机准备的**组合快捷键**：candle 侧没有 NPU 后端，所以这里仍然返回
+/// `None`（= CPU），真正的 NPU 加速由 ONNX Runtime 的 provider 完成——
+/// CLI 那边看到 `--device npu` 会把它翻成 `--provider qnn`（见
+/// [`crate::cli`] 的 `init_inference_backend`）。这样桌面端 `--device npu`
+/// 不会因为 candle 不认识 npu 直接报错，模型也能照常跑。
 pub fn resolve_device(spec: &str) -> anyhow::Result<Option<candle_core::Device>> {
     match spec.trim().to_ascii_lowercase().as_str() {
         "" | "auto" => Ok(None),
         "cpu" => Ok(Some(candle_core::Device::Cpu)),
+        // NPU：candle 不接，回落 CPU；ORT 侧走 provider（由上层设置）。
+        "npu" | "npu-auto" => Ok(Some(candle_core::Device::Cpu)),
         "cuda" | "gpu" => {
             #[cfg(feature = "cuda")]
             {
@@ -16,7 +25,7 @@ pub fn resolve_device(spec: &str) -> anyhow::Result<Option<candle_core::Device>>
                 anyhow::bail!("当前二进制没编译 cuda 支持，请用 --features cuda 重新构建")
             }
         }
-        other => anyhow::bail!("未知推理设备 {other:?}（可选 auto / cpu / cuda）"),
+        other => anyhow::bail!("未知推理设备 {other:?}（可选 auto / cpu / cuda / npu）"),
     }
 }
 pub mod img_utils;
@@ -27,8 +36,14 @@ pub mod video_utils;
 
 use std::fs::File;
 use std::io::{Cursor, Read, Write};
-use std::time::{SystemTime, UNIX_EPOCH};
-use std::{collections::HashMap, fs, path::PathBuf, process::Command, time::Duration};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    time::Duration,
+};
 
 use crate::models::common::model_mapping::WhichModel;
 use crate::params::chat::{
@@ -513,7 +528,7 @@ pub fn get_default_save_dir() -> Option<String> {
     };
     if let Err(e) = fs::create_dir_all(&dir) {
         eprintln!("Failed to create directory {:?}: {}", dir, e);
-        }
+    }
     Some(dir.to_string_lossy().to_string())
 }
 
@@ -522,32 +537,169 @@ pub async fn download_model(
     save_dir: &str,
     max_retries: u32,
 ) -> anyhow::Result<()> {
+    let dir = PathBuf::from(save_dir).join(model_id);
+    download_files_to(model_id, &dir, max_retries, DownloadFilter::ALL)
+        .await
+        .map(|_| ())
+}
+
+/// 下载过滤：`only` 非空时只下这些相对路径——桌宠的 sherpa/laya 只要几个权重，
+/// 而镜像仓库里通常还放着一份 fp32 的重复模型（SenseVoice 的 `model.onnx` 就有
+/// 900MB+），没必要下。`skip_prefixes` 按路径前缀整段跳过。
+#[derive(Clone, Copy)]
+pub struct DownloadFilter<'a> {
+    /// 只要这些文件（相对仓库根的路径）；`None` = 仓库里全部文件。
+    pub only: Option<&'a [&'a str]>,
+    /// 跳过这些路径前缀。
+    pub skip_prefixes: &'a [&'a str],
+}
+
+impl DownloadFilter<'static> {
+    /// 整个仓库都下（`aha download` 的默认行为）。
+    pub const ALL: DownloadFilter<'static> = DownloadFilter {
+        only: None,
+        skip_prefixes: &[],
+    };
+}
+
+/// 一次下载的进度快照。`done` / `total` 是整次任务，`file_done` / `file_total` 是当前文件。
+#[derive(Clone, Copy)]
+pub struct DownloadProgress<'a> {
+    pub path: &'a str,
+    pub file_done: u64,
+    pub file_total: u64,
+    pub done: u64,
+    pub total: u64,
+    pub files_done: usize,
+    pub files_total: usize,
+}
+
+/// 下载控制：进度回调与取消检查都可以不给。
+///
+/// 回调在下载线程里同步触发（约 100ms 节流一次），别在里面做耗时操作；
+/// FFI 那层把它转成 C 函数指针后，调用方要保证 `user` 在这次下载期间一直有效。
+#[derive(Clone, Copy, Default)]
+pub struct DownloadCtl<'a> {
+    pub progress: Option<&'a dyn Fn(&DownloadProgress<'_>)>,
+    pub cancel: Option<&'a dyn Fn() -> bool>,
+}
+
+impl DownloadCtl<'_> {
+    fn cancelled(&self) -> bool {
+        self.cancel.is_some_and(|cancel| cancel())
+    }
+}
+
+/// 下载结果：真正写盘的文件（相对仓库根的路径, 字节数）。
+#[derive(Default, Debug)]
+pub struct DownloadSummary {
+    pub files: Vec<(String, u64)>,
+    pub skipped: usize,
+}
+
+struct ProgressTracker<'a> {
+    ctl: DownloadCtl<'a>,
+    total: u64,
+    done: u64,
+    files_done: usize,
+    files_total: usize,
+    last: Instant,
+}
+
+impl<'a> ProgressTracker<'a> {
+    fn new(ctl: DownloadCtl<'a>, total: u64, files_total: usize) -> Self {
+        Self {
+            ctl,
+            total,
+            done: 0,
+            files_done: 0,
+            files_total,
+            last: Instant::now(),
+        }
+    }
+
+    fn check_cancel(&self) -> anyhow::Result<()> {
+        if self.ctl.cancelled() {
+            anyhow::bail!("下载已取消");
+        }
+        Ok(())
+    }
+
+    fn skip(&mut self, size: u64) {
+        self.done += size;
+        self.files_done += 1;
+    }
+
+    /// 当前文件又收到 `n` 字节。
+    fn advance(&mut self, path: &str, n: u64, file_done: u64, file_total: u64) {
+        self.done += n;
+        self.emit(path, file_done, file_total, false);
+    }
+
+    fn finish_file(&mut self, path: &str, size: u64) {
+        self.files_done += 1;
+        self.emit(path, size, size, true);
+    }
+
+    fn emit(&mut self, path: &str, file_done: u64, file_total: u64, force: bool) {
+        if !force && self.last.elapsed() < Duration::from_millis(100) {
+            return;
+        }
+        self.last = Instant::now();
+        if let Some(cb) = self.ctl.progress {
+            cb(&DownloadProgress {
+                path,
+                file_done,
+                file_total,
+                done: self.done,
+                total: self.total,
+                files_done: self.files_done,
+                files_total: self.files_total,
+            });
+        }
+    }
+}
+
+/// 把 `repo_id` 指定的 ModelScope 仓库文件下到 `dir`，失败按 `max_retries` 重试。
+///
+/// 已存在且大小一致的文件跳过；剩下的从
+/// `{MS_RESOLVE}/{repo_id}/resolve/master/{path}` 流式写盘。
+pub async fn download_files_to(
+    repo_id: &str,
+    dir: &Path,
+    max_retries: u32,
+    filter: DownloadFilter<'_>,
+) -> anyhow::Result<DownloadSummary> {
+    download_files_to_with_ctl(repo_id, dir, max_retries, filter, DownloadCtl::default()).await
+}
+
+/// 同上，但可以挂进度回调和取消检查（FFI 层用这个）。
+pub async fn download_files_to_with_ctl(
+    repo_id: &str,
+    dir: &Path,
+    max_retries: u32,
+    filter: DownloadFilter<'_>,
+    ctl: DownloadCtl<'_>,
+) -> anyhow::Result<DownloadSummary> {
+    let max_retries = max_retries.max(1);
     let mut attempts = 0u32;
     loop {
         attempts += 1;
-        println!(
-            "Attempting to download model (attempt {}/{})",
-            attempts, max_retries
-        );
+        println!("Attempting to download {repo_id} (attempt {attempts}/{max_retries})");
 
-        match download_repo(model_id, save_dir).await {
-            Ok(()) => {
+        match download_repo(repo_id, dir, filter, ctl).await {
+            Ok(summary) => {
                 println!("Model downloaded successfully");
-                return Ok(());
+                return Ok(summary);
             }
             Err(e) => {
-                if attempts >= max_retries {
+                if attempts >= max_retries || ctl.cancelled() {
                     return Err(anyhow::anyhow!(
-                        "Failed to download model after {} attempts. Last error: {}",
-                        max_retries,
-                        e
+                        "Failed to download {repo_id} after {attempts} attempts. Last error: {e}"
                     ));
                 }
 
-                println!(
-                    "Download failed (attempt {}): {}. Retrying in 2 seconds...",
-                    attempts, e
-                );
+                println!("Download failed (attempt {attempts}): {e}. Retrying in 2 seconds...");
                 sleep(Duration::from_secs(2)).await;
             }
         }
@@ -585,75 +737,137 @@ const MS_API: &str = "https://modelscope.cn/api/v1/models";
 const MS_RESOLVE: &str = "https://modelscope.cn/models";
 const MS_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
                      (KHTML, like Gecko) Chrome/89.0.4389.90 Safari/537.36";
+/// 小于这个字节数的文件不核实际大小（tokens.txt 这类只有几百字节）。
+const TINY_BYTES: u64 = 4096;
 
-/// 把一个模型仓库的文件全量下到 `save_dir/<model_id>`（已存在且大小一致的跳过）。
+/// 把一个 ModelScope 仓库的文件下到 `dir`（已存在且大小一致的跳过）。
 ///
 /// 自己写而不用 `modelscope` crate：它的 reqwest 走平台证书校验，Android 上直接 panic，
 /// 见 [`http`]。顺手也去掉了那个依赖。
-async fn download_repo(model_id: &str, save_dir: &str) -> Result<()> {
-    let dir = PathBuf::from(save_dir).join(model_id);
-    fs::create_dir_all(&dir)?;
-    println!("\nDownloading model {model_id} to: {}\n", dir.display());
+async fn download_repo(
+    repo_id: &str,
+    dir: &Path,
+    filter: DownloadFilter<'_>,
+    ctl: DownloadCtl<'_>,
+) -> Result<DownloadSummary> {
+    if ctl.cancelled() {
+        anyhow::bail!("下载已取消");
+    }
+    fs::create_dir_all(dir)?;
+    println!("\nDownloading model {repo_id} to: {}\n", dir.display());
 
     let client = http::client()?;
     let resp = client
-        .get(format!("{MS_API}/{model_id}/repo/files?Recursive=true"))
+        .get(format!("{MS_API}/{repo_id}/repo/files?Recursive=true"))
         .header("User-Agent", MS_UA)
         .send()
         .await?;
     if !resp.status().is_success() {
         anyhow::bail!(
-            "Failed to list files of {model_id}: HTTP {}（模型 id 写错了，或者需要登录）",
+            "Failed to list files of {repo_id}: HTTP {}（模型 id 写错了，或者需要登录）",
             resp.status()
         );
     }
     let body: RepoFilesResponse = resp.json().await?;
     if !body.success {
-        anyhow::bail!("Failed to list files of {model_id}: {}", body.message);
+        anyhow::bail!("Failed to list files of {repo_id}: {}", body.message);
     }
     let files = body
         .data
-        .ok_or_else(|| anyhow!("Failed to list files of {model_id}: empty response"))?
+        .ok_or_else(|| anyhow!("Failed to list files of {repo_id}: empty response"))?
         .files;
-    let blobs: Vec<RepoFile> = files.into_iter().filter(|f| f.kind == "blob").collect();
+    let blobs: Vec<RepoFile> = files
+        .into_iter()
+        .filter(|f| f.kind == "blob")
+        .filter(|f| match filter.only {
+            Some(only) => only.contains(&f.path.as_str()),
+            None => true,
+        })
+        .filter(|f| {
+            !filter
+                .skip_prefixes
+                .iter()
+                .any(|prefix| f.path.starts_with(prefix))
+        })
+        .collect();
     if blobs.is_empty() {
-        anyhow::bail!("{model_id} 的文件列表是空的");
+        match filter.only {
+            Some(only) => anyhow::bail!(
+                "{repo_id} 里没有这些文件：{}（仓库的文件列表变了？）",
+                only.join(", ")
+            ),
+            None => anyhow::bail!("{repo_id} 的文件列表是空的"),
+        }
     }
 
+    let mut summary = DownloadSummary::default();
+    let total: u64 = blobs.iter().map(|file| file.size).sum();
+    let mut tracker = ProgressTracker::new(ctl, total, blobs.len());
     for file in &blobs {
+        tracker.check_cancel()?;
         let dst = dir.join(&file.path);
-        if fs::metadata(&dst).map(|m| m.len() == file.size).unwrap_or(false) {
+        if fs::metadata(&dst)
+            .map(|m| m.len() == file.size)
+            .unwrap_or(false)
+        {
+            summary.skipped += 1;
+            tracker.skip(file.size);
             continue;
         }
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent)?;
         }
-        download_file(&client, model_id, file, &dst).await?;
+        download_file(&client, repo_id, file, &dst, &mut tracker).await?;
         println!("  {} ({:.1} MB)", file.path, file.size as f64 / 1_048_576.0);
+        tracker.finish_file(&file.path, file.size);
+        summary.files.push((file.path.clone(), file.size));
     }
-    Ok(())
+    Ok(summary)
 }
 
 async fn download_file(
     client: &reqwest::Client,
-    model_id: &str,
+    repo_id: &str,
     file: &RepoFile,
-    dst: &std::path::Path,
+    dst: &Path,
+    tracker: &mut ProgressTracker<'_>,
 ) -> Result<()> {
     // shortcut: 单个文件不支持断点续传（整个文件重下）；已完成的文件按大小跳过，
     // 只在网络很差的大 shard 上才会浪费带宽。
-    let url = format!("{MS_RESOLVE}/{model_id}/resolve/master/{}", file.path);
+    let url = format!("{MS_RESOLVE}/{repo_id}/resolve/master/{}", file.path);
     let resp = client.get(&url).header("User-Agent", MS_UA).send().await?;
     if !resp.status().is_success() {
         anyhow::bail!("Failed to download {}: HTTP {}", file.path, resp.status());
     }
 
-    let mut out = File::create(dst)?;
+    // 先写 `<file>.part`，校验大小后再改名：进程中途被杀也不会留下"看起来完整"的半截文件
+    // （`ensure_downloaded` 这类调用只按文件是否存在判断，半截文件会被当成已下完）。
+    let part = dst.with_file_name(format!(
+        "{}.part",
+        dst.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    let mut out = File::create(&part)?;
     let mut stream = resp.bytes_stream();
+    let mut written = 0u64;
     while let Some(chunk) = stream.next().await {
-        out.write_all(&chunk?)?;
+        // 取消/退出时立即中断，`.part` 留着，下次从零重下这个文件
+        tracker.check_cancel()?;
+        let chunk = chunk?;
+        written += chunk.len() as u64;
+        out.write_all(&chunk)?;
+        tracker.advance(&file.path, chunk.len() as u64, written, file.size);
     }
     out.flush()?;
+    drop(out);
+    // 大小对不上就是没下完（CDN 偶尔截断）：留着 .part，下次重下
+    if file.size >= TINY_BYTES && written != file.size {
+        anyhow::bail!(
+            "下载不完整：{} 得到 {written} 字节，期望 {}",
+            file.path,
+            file.size
+        );
+    }
+    fs::rename(&part, dst)?;
     Ok(())
 }
 

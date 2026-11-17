@@ -20,6 +20,7 @@ pub mod pipeline;
 pub mod quantizer;
 pub mod roberta;
 pub mod sovits;
+pub mod sovits_qnn;
 pub mod style;
 pub mod t2s;
 pub mod text_frontend;
