@@ -345,7 +345,9 @@ aha list -j
 - `image`：图像处理模型
 - `tts`：语音生成
 
-### npu - 探测本机的 NPU 运行时
+### npu - 探测本机的 NPU 运行时（仅 Android 构建）
+
+> 这条子命令只在 Android 目标上编译（`#[cfg(target_os = "android")]`）。桌面构建没有它——桌面支持的是 ONNX Runtime 的 `cuda` / `coreml` / `trt` / `openvino` 这些 provider，用 `--provider` 选，不需要探测。
 
 报告这台机器能给 ONNX Runtime 提供什么：高通 QNN（Hexagon HTP）、NNAPI，以及可执行文件旁边那套 ONNX Runtime 到底编了哪些 execution provider。也会顺带告诉这个 `aha` 构建能不能用 provider。
 

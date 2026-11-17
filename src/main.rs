@@ -2,8 +2,7 @@ use clap::Parser;
 
 use crate::cli::{
     args::{Cli, Commands},
-    run_cli, run_delete, run_download, run_list, run_multi, run_npu, run_probe, run_ps, run_run,
-    run_serv,
+    run_cli, run_delete, run_download, run_list, run_multi, run_probe, run_ps, run_run, run_serv,
 };
 
 mod cli;
@@ -19,7 +18,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Cli(args) => run_cli(args).await,
         Commands::Serv(args) => run_serv(args).await,
         Commands::Probe(args) => run_probe(args).await,
-        Commands::Npu(args) => run_npu(args),
+        #[cfg(target_os = "android")]
+        Commands::Npu(args) => crate::cli::run_npu(args),
         #[cfg(feature = "qnn")]
         Commands::Qnn(args) => crate::cli::run_qnn(args),
         Commands::Multi(args) => run_multi(args).await,

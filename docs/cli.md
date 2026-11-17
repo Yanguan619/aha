@@ -345,7 +345,9 @@ Example:
 - `image`: Image processing models
 - `tts`： Text to speech
 
-### npu - Inspect the NPU runtime on this machine
+### npu - Inspect the NPU runtime on this machine (Android builds only)
+
+> This subcommand is only compiled for the Android target (`#[cfg(target_os = "android")]`). Desktop builds do not have it — what they support are ONNX Runtime's `cuda` / `coreml` / `trt` / `openvino` providers, selected with `--provider`, and those need no probing.
 
 Report what this machine offers an ONNX Runtime provider: Qualcomm QNN (Hexagon HTP), NNAPI, and which execution providers the ONNX Runtime next to the binary was built with. It also says whether this particular `aha` build can use a provider at all.
 

@@ -1,9 +1,11 @@
+#[cfg(target_os = "android")]
+use crate::cli::args::NpuArgs;
 #[cfg(feature = "qnn")]
 use crate::cli::args::QnnArgs;
 use crate::{
     cli::args::{
-        CliArgs, DeleteArgs, DownloadArgs, ListArgs, MultiArgs, NpuArgs, ProbeArgs, RunArgs,
-        ServArgs, ServListArgs,
+        CliArgs, DeleteArgs, DownloadArgs, ListArgs, MultiArgs, ProbeArgs, RunArgs, ServArgs,
+        ServListArgs,
     },
     server::{
         api::{InitOptions, ModelSpec, init, init_multi},
@@ -529,6 +531,7 @@ pub(crate) async fn run_multi(args: MultiArgs) -> anyhow::Result<()> {
 ///
 /// 不加载任何模型、不联网，手机上也能秒回。`--json` 给桌面端 / Android 壳读，
 /// `-r` 只输出 provider 名字（探测不到就是 `cpu`）。
+#[cfg(target_os = "android")]
 pub(crate) fn run_npu(args: NpuArgs) -> anyhow::Result<()> {
     let NpuArgs { json, recommended } = args;
     let report = aha::utils::npu::probe();

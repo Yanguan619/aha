@@ -455,6 +455,7 @@ impl NpuReport {
 /// `include/` 一份），`QNN_SDK_ROOT` 往往只指向其中一份，另两份可能落在同级的
 /// 兄弟目录里（`lx/` 和 `x/`）。扫描按"目录预算"封顶，避免在 `E:\weights`
 /// 这种放着几十个大模型的目录上呆住。
+#[cfg(target_os = "android")]
 fn find_under(base: &Path, tail: &[&str], marker: &str) -> Option<PathBuf> {
     /// 最多翻这么多个目录就放弃。
     const DIR_BUDGET: usize = 2000;
@@ -512,6 +513,7 @@ fn find_under(base: &Path, tail: &[&str], marker: &str) -> Option<PathBuf> {
 }
 
 /// 从 `QNN_SDK_ROOT` 出发（含往上几层）摸一遍转换链要的目录。
+#[cfg(target_os = "android")]
 pub fn probe_qnn_sdk() -> Option<QnnSdk> {
     let root_env = std::env::var("QNN_SDK_ROOT")
         .ok()
@@ -562,6 +564,7 @@ pub fn probe_qnn_sdk() -> Option<QnnSdk> {
 ///
 /// `AHA_NPU_LIB_DIR` 优先：APK 里 native 库的绝对路径由 Java 侧传进来，
 /// 桌面/调试时也能手动指（多个用 `;` 或 `:` 分隔）。
+#[cfg(target_os = "android")]
 pub fn probe_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Ok(explicit) = std::env::var("AHA_NPU_LIB_DIR") {
@@ -599,11 +602,32 @@ pub fn probe_dirs() -> Vec<PathBuf> {
 ///
 /// 结果进程内缓存：探测要读一遍 `libonnxruntime.so`（20MB+），而 provider 在
 /// 一次启动里是固定的，没必要每个模型加载都重扫。
+#[cfg(target_os = "android")]
 pub fn probe() -> NpuReport {
     static REPORT: OnceLock<NpuReport> = OnceLock::new();
     REPORT.get_or_init(probe_uncached).clone()
 }
 
+/// 桌面没有"NPU 运行时"这回事：给一个空报告，调用方统一按"没有 NPU"处理。
+///
+/// 桌面仍然支持 ONNX Runtime 的非移动端 provider（cuda / coreml / trt / openvino），
+/// 那部分注册表不受影响。
+#[cfg(not(target_os = "android"))]
+pub fn probe() -> NpuReport {
+    NpuReport {
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        ort_linked: cfg!(any(
+            feature = "sherpa-asr",
+            feature = "sherpa-tts",
+            feature = "onnx-runtime"
+        )),
+        notes: vec!["NPU 运行时探测只在 Android 构建里编（桌面没有 `aha npu`）".to_string()],
+        ..Default::default()
+    }
+}
+
+#[cfg(target_os = "android")]
 fn probe_uncached() -> NpuReport {
     let dirs = probe_dirs();
     let mut report = NpuReport {
@@ -709,6 +733,7 @@ fn probe_uncached() -> NpuReport {
 }
 
 /// 这份目录里的 ONNX Runtime 本体。
+#[cfg(target_os = "android")]
 fn is_ort_lib(name: &str) -> bool {
     matches!(
         name,
@@ -717,6 +742,7 @@ fn is_ort_lib(name: &str) -> bool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 enum LibKind {
     QnnHtp,
     QnnSystem,
@@ -727,6 +753,7 @@ enum LibKind {
 }
 
 /// 把一个文件名归到某一类。非共享库（Stub/Skel/其它架构）返回 `Skip`。
+#[cfg(target_os = "android")]
 fn classify(name: &str) -> Option<LibKind> {
     // HTP 的 Stub/Skel 是给 skel 侧编译用的，不参与 EP 初始化；只记 arch。
     if htp_arch(name).is_some() {
@@ -751,6 +778,7 @@ fn classify(name: &str) -> Option<LibKind> {
 }
 
 /// 从 `libQnnHtpV81Stub.so` 里抠出 SoC 的 HTP 版本号。
+#[cfg(target_os = "android")]
 pub fn htp_arch(name: &str) -> Option<u32> {
     let rest = name.strip_prefix("libQnnHtpV")?;
     let digits = rest.strip_suffix("Stub.so")?;
@@ -758,6 +786,7 @@ pub fn htp_arch(name: &str) -> Option<u32> {
 }
 
 /// ORT 给每个编进去的 EP 导出的符号前缀。
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 const ORT_EP_SYMBOL: &[u8] = b"OrtSessionOptionsAppendExecutionProvider_";
 
 /// 扫 `libonnxruntime.so` 里编进了哪些 EP。
@@ -765,6 +794,7 @@ const ORT_EP_SYMBOL: &[u8] = b"OrtSessionOptionsAppendExecutionProvider_";
 /// 不 dlopen（Android 上加载 20MB 的库代价不小，而且 `aha npu` 可能在别的平台上
 /// 分析一份拷过来的 .so），直接把文件当字节串找符号前缀，再把名字尾巴读出来：
 /// `OrtSessionOptionsAppendExecutionProvider_QNN` / `_Nnapi` / `_CPU` …
+#[cfg(target_os = "android")]
 pub fn scan_ort_eps(path: &Path) -> Vec<String> {
     const MAX_BYTES: u64 = 1 << 30;
     if std::fs::metadata(path)
@@ -799,6 +829,7 @@ pub fn scan_ort_eps(path: &Path) -> Vec<String> {
 }
 
 /// 朴素子串查找：needle 很短、命中很少，不值得为它引依赖。
+#[cfg(target_os = "android")]
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || haystack.len() < needle.len() {
         return None;
@@ -817,6 +848,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(target_os = "android")]
     fn htp_arch_is_parsed_from_stub_names() {
         assert_eq!(htp_arch("libQnnHtpV81Stub.so"), Some(81));
         assert_eq!(htp_arch("libQnnHtpV68Stub.so"), Some(68));
@@ -826,6 +858,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "android")]
     fn classify_recognises_runtimes() {
         assert_eq!(classify("libQnnHtp.so"), Some(LibKind::QnnHtp));
         assert_eq!(classify("libQnnSystem.so"), Some(LibKind::QnnSystem));
@@ -950,6 +983,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "android")]
     fn scan_ort_eps_reads_exported_ep_symbols() {
         let path = std::env::temp_dir().join(format!("aha-ort-{}.bin", std::process::id()));
         let mut bytes = b"\x7fELF junk OrtSessionOptionsAppendExecutionProvider_CPU\x00".to_vec();

@@ -19,7 +19,8 @@ pub(crate) enum Commands {
     Multi(MultiArgs),
     /// 校验模型与二进制编译特征是否对得上（桌宠拉起 Laya 前先问一次）
     Probe(ProbeArgs),
-    /// 探测手机/盒子上的 NPU 运行时（QNN / NNAPI），并给出 --provider 建议
+    /// 探测手机/盒子上的 NPU 运行时（QNN / NNAPI），并给出 --provider 建议（仅 Android 构建）
+    #[cfg(target_os = "android")]
     Npu(NpuArgs),
     /// 直接检查/执行一个 QAIRT context binary（模型无关：图与张量都从 bin 里读）
     #[cfg(feature = "qnn")]
@@ -187,6 +188,7 @@ pub(crate) struct ProbeArgs {
 }
 
 /// Arguments for the 'npu' subcommand
+#[cfg(target_os = "android")]
 #[derive(Args, Debug)]
 pub(crate) struct NpuArgs {
     /// 输出 JSON（给桌面端 / Android 壳读）
