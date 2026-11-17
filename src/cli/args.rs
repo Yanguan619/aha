@@ -261,8 +261,9 @@ pub(crate) struct QnnArgs {
     /// context binary 路径（`--stage` 产物里的 `vitsS_ctx.bin` 之类）
     #[arg(long, conflicts_with = "model")]
     pub context: Option<String>,
-    /// 模型库路径（`lib<name>.so`）。float32 IO 的图在 HTP v81 上只能走这条路：
-    /// context binary 会报 `Dma execution failed on the skel side`
+    /// 模型库路径（`lib<name>.so`），权重是同目录的 `<name>.bin`。
+    /// 每个进程都要 compose + finalize 一次图（SoVITS 实测数分钟），运行时请优先用
+    /// `--context` 的预编译 context binary
     #[arg(long, conflicts_with = "context")]
     pub model: Option<String>,
     /// HTP 后端库；Android 上通常是绝对路径
