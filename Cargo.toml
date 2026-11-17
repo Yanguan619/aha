@@ -119,6 +119,11 @@ laya-cuda = ["dep:sys1", "sys1/cuda", "cuda"]
 vla = []
 # Optional: GPT-SoVITS（v2Pro 中文）。文本前端 + AR + SoVITS 合成器。
 gpt-sovits = ["dep:jieba-rs"]
+
+# QNN / HTP 运行时（Android 专用：C 垫片靠 dlopen 加载，算力在高通 Hexagon HTP 上）。
+# 桌面构建默认**不带**它：`aha qnn` 子命令、`AHA_SOVITS_QNN` 的解码路径都不会被编进去。
+# Android 构建用 scripts/build_android.py（会自动加上这个特性）。
+qnn = []
 # 可选：让 candle 的 CPU matmul 走 Intel MKL（比纯 Rust gemm 快，用来补 Laya CPU 的差距）。
 # 代价：intel-mkl-src 首次构建要下载 ~1GB MKL，静态链接会让 exe 明显变大。
 mkl = ["candle-core/mkl", "candle-nn/mkl"]

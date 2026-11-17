@@ -22,6 +22,7 @@ pub(crate) enum Commands {
     /// 探测手机/盒子上的 NPU 运行时（QNN / NNAPI），并给出 --provider 建议
     Npu(NpuArgs),
     /// 直接检查/执行一个 QAIRT context binary（模型无关：图与张量都从 bin 里读）
+    #[cfg(feature = "qnn")]
     Qnn(QnnArgs),
     /// List all running aha services
     Ps(ServListArgs),
@@ -256,6 +257,7 @@ pub(crate) struct DeleteArgs {
 ///
 /// 图名、张量名、类型、维度全部从 context binary 里读，所以对任何用
 /// `scripts/qnn_convert.py` 转出来的模型都成立。
+#[cfg(feature = "qnn")]
 #[derive(Args, Debug)]
 pub(crate) struct QnnArgs {
     /// context binary 路径（`--stage` 产物里的 `vitsS_ctx.bin` 之类）

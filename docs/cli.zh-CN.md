@@ -423,6 +423,8 @@ aha qnn --model libvitsF.so --info
 
 **用 context binary 还是模型库**：两者都能跑，但模型库路径**每个进程都要 compose + finalize 一次图**，实测 SoVITS 约 **737 s**；同一份图的 context binary 加载只要约 0.7 s、整条链路约 **1.8 s**。所以模型库留给转换/校验（`--info`、喂输入验形状），业务运行请用 context binary（`qnn-context-binary-generator` 生成一次即可）。
 
+**编译期开关**：这条子命令由 cargo 特性 `qnn` 控制（Android 专属后端）。`scripts/build_android.py` 会自动把它加进特性列表；桌面构建默认**不带**，所以桌面上 `aha qnn` 根本不存在（`aha npu` 的探测仍在）。要在 Linux 桌面上试用就显式加 `--features qnn`。
+
 **前提**：`aha` 可执行文件旁边要有 `libaha_qnn.so`（`scripts/build_android.py` 在设了 `QNN_SDK_ROOT` 时会自动编译并放在一起），以及设备上的 `libQnnHtp.so` / `libQnnSystem.so`。缺垫片时这条子命令会直接说明缺什么，不影响其它功能。
 
 ## 常见使用场景

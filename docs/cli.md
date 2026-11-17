@@ -423,6 +423,8 @@ After one refusal the same process goes straight to the fallback on later calls,
 
 **Context binary or model library**: both work, but the model-library path **composes and finalises the graph in every process** — measured at **~737 s** for SoVITS — while the same graph's context binary loads in ~0.7 s and the whole chain takes **~1.8 s**. Keep the model library for conversion/inspection (`--info`, feeding inputs to check shapes) and run business traffic from a context binary (build it once with `qnn-context-binary-generator`).
 
+**Build-time switch:** this subcommand is behind the `qnn` cargo feature (an Android-only backend). `scripts/build_android.py` adds it automatically; desktop builds leave it **off**, so `aha qnn` does not exist there (`aha npu` probing still does). Pass `--features qnn` explicitly to try it on a Linux desktop.
+
 **Requirements:** `libaha_qnn.so` next to the `aha` executable (`scripts/build_android.py` builds and places it whenever `QNN_SDK_ROOT` is set), plus `libQnnHtp.so` / `libQnnSystem.so` on the device. Without the shim the subcommand says exactly what is missing; nothing else is affected.
 
 ## Common Use Cases

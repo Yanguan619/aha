@@ -13,6 +13,7 @@ pub mod llama_cpp;
 pub mod model_mapping;
 pub mod modules;
 /// QNN 运行时：加载 QAIRT context binary 跑任意静态图（垫片在 `native/qnn/`）。
+#[cfg(feature = "qnn")]
 pub mod qnn;
 pub mod reranker;
 pub mod sample;

@@ -1,7 +1,9 @@
+#[cfg(feature = "qnn")]
+use crate::cli::args::QnnArgs;
 use crate::{
     cli::args::{
-        CliArgs, DeleteArgs, DownloadArgs, ListArgs, MultiArgs, NpuArgs, ProbeArgs, QnnArgs,
-        RunArgs, ServArgs, ServListArgs,
+        CliArgs, DeleteArgs, DownloadArgs, ListArgs, MultiArgs, NpuArgs, ProbeArgs, RunArgs,
+        ServArgs, ServListArgs,
     },
     server::{
         api::{InitOptions, ModelSpec, init, init_multi},
@@ -549,6 +551,7 @@ pub(crate) fn run_npu(args: NpuArgs) -> anyhow::Result<()> {
 /// `scripts/qnn_convert.py` 转出来的模型都能用同一条命令跑。
 /// `--input 名字=文件` 给指定张量喂数据，没给的补零；`--out-dir` 把每个输出
 /// 张量按名字写成 `.bin`（float32 的话可以直接当 numpy 读）。
+#[cfg(feature = "qnn")]
 pub(crate) fn run_qnn(args: QnnArgs) -> anyhow::Result<()> {
     use aha::models::common::qnn::{self, Runtime};
     use std::time::Instant;

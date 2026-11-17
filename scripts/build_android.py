@@ -339,8 +339,12 @@ def main() -> int:
     cargo_args = ["cargo", "build", "--target", TRIPLE]
     if args.release:
         cargo_args.append("--release")
-    if args.features:
-        cargo_args += ["--features", args.features]
+    # QNN 是 Android 专属能力（dlopen 垫片 + Hexagon HTP），桌面构建默认不带，
+    # 由这个脚本负责把它加进特性列表。
+    features = [f for f in (args.features or "").split(",") if f]
+    if "qnn" not in features:
+        features.append("qnn")
+    cargo_args += ["--features", ",".join(features)]
     say(" ".join(cargo_args))
 
     code = subprocess.call(cargo_args, cwd=ROOT, env=env)

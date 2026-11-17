@@ -20,6 +20,7 @@ pub mod pipeline;
 pub mod quantizer;
 pub mod roberta;
 pub mod sovits;
+#[cfg(feature = "qnn")]
 pub mod sovits_qnn;
 pub mod style;
 pub mod t2s;

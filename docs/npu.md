@@ -210,7 +210,7 @@ aha qnn --context vitsS_ctx.bin \
   --out-dir out                                  # run once, writes out/audio.bin
 ```
 
-It talks to QNN through `libaha_qnn.so` (from `native/qnn/aha_qnn.c`, looked up next to the `aha` binary or via `AHA_QNN_LIB`). `scripts/build_android.py` builds that shim automatically when `QNN_SDK_ROOT` is set, and skips it (with a hint, not a failure) when it is not.
+It talks to QNN through `libaha_qnn.so` (the whole path is behind the `qnn` cargo feature: on by default in the Android build script, off for desktop builds) (from `native/qnn/aha_qnn.c`, looked up next to the `aha` binary or via `AHA_QNN_LIB`). `scripts/build_android.py` builds that shim automatically when `QNN_SDK_ROOT` is set, and skips it (with a hint, not a failure) when it is not.
 
 GPT-SoVITS' SoVITS decoder is wired to this runtime, switched by an environment variable (a `lib<name>.so` value opens a model library, anything else a context binary).
 

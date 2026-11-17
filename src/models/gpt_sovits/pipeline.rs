@@ -27,7 +27,11 @@ use crate::utils::audio_utils::{load_audio_use_hound, load_audio_use_symphonia, 
 use super::hubert::Hubert;
 use super::roberta::RobertaEncoder;
 use super::sovits::{Sovits, SynthOptions};
+#[cfg(feature = "qnn")]
 use super::sovits_qnn::{self, SovitsQnn};
+/// 没开 `qnn` 特性时用一个空类型占位：字段还在，但永远是 `None`。
+#[cfg(not(feature = "qnn"))]
+type SovitsQnn = std::convert::Infallible;
 use super::style::linear_spectrogram;
 use super::t2s::{GenOptions, Text2Semantic};
 use super::text_frontend::ZhFrontend;
@@ -137,6 +141,7 @@ impl GptSovitsModel {
 
         // SoVITS 解码链的 QNN 版本：`AHA_SOVITS_QNN` 指向 context binary 时才启用，
         // 打不开就退回 candle（只在 stderr 提示一次，不中断）。
+        #[cfg(feature = "qnn")]
         let sovits_qnn = match SovitsQnn::from_env() {
             Some(Ok(rt)) => {
                 tracing::info!(
@@ -151,6 +156,8 @@ impl GptSovitsModel {
             }
             None => None,
         };
+        #[cfg(not(feature = "qnn"))]
+        let sovits_qnn: Option<SovitsQnn> = None;
 
         Ok(Self {
             dir,
@@ -308,6 +315,7 @@ impl GptSovitsModel {
             ..Default::default()
         };
         // 有 QNN context binary 且帧数在图上限内 → 解码链交给 HTP，否则 candle。
+        #[cfg(feature = "qnn")]
         if let Some(qnn) = self.sovits_qnn.as_ref()
             && let (Some((refer, bins, frames)), Some(sv)) =
                 (ref_feat.qnn_refer.as_ref(), ref_feat.qnn_sv.as_ref())
@@ -433,6 +441,7 @@ impl GptSovitsModel {
         let ge = self.sovits.ge(&spec, sv.as_ref())?;
 
         // QNN 图自己算 ge（ref_enc 在里面），所以要留原始谱与 sv。
+        #[cfg(feature = "qnn")]
         let (qnn_refer, qnn_sv) = if self.sovits_qnn.is_some() {
             let dims = spec.dims();
             let flat: Vec<f32> = spec.to_device(&cpu)?.flatten_all()?.to_vec1()?;
@@ -450,6 +459,8 @@ impl GptSovitsModel {
         } else {
             (None, None)
         };
+        #[cfg(not(feature = "qnn"))]
+        let (qnn_refer, qnn_sv) = (None, None);
 
         Ok(RefFeat {
             prompt,

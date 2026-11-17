@@ -210,7 +210,7 @@ aha qnn --context vitsS_ctx.bin \
   --out-dir out                                  # 跑一次，输出写到 out/audio.bin
 ```
 
-它通过 `native/qnn/aha_qnn.c` 编出来的 `libaha_qnn.so` 访问 QNN（默认在 aha 同目录，找不到时可用 `AHA_QNN_LIB` 指定）。`scripts/build_android.py` 只要设了 `QNN_SDK_ROOT` 就会自动编这个垫片；没设则跳过，`aha qnn` 会给出提示而不是崩溃。
+它通过 `native/qnn/aha_qnn.c` 编出来的 `libaha_qnn.so` 访问 QNN（整块代码由 cargo 特性 `qnn` 门控：Android 构建脚本默认开启，桌面构建默认不编）（默认在 aha 同目录，找不到时可用 `AHA_QNN_LIB` 指定）。`scripts/build_android.py` 只要设了 `QNN_SDK_ROOT` 就会自动编这个垫片；没设则跳过，`aha qnn` 会给出提示而不是崩溃。
 
 GPT-SoVITS 的 SoVITS 解码链已经接到这个运行时上，用环境变量切换（值是 `lib<name>.so` 时按模型库打开，其余按 context binary）。
 
