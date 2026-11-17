@@ -251,6 +251,17 @@ aha run --model gpt-sovits-v2pro-zh --input "你好，世界"
 
 转换时用 `--act-bw 32 --weight-bw 16`（float32 激活）即可，`qnn_convert.py --build-so` 会产出 `libvitsF.so` + `vitsF.bin`（两个文件必须同目录），再由 `qnn-context-binary-generator --model libvitsF.so --output_dir . --binary_file vitsF_ctx.bin` 生成运行时用的 context binary。
 
+**转换产物已发布**：[`Yanguan/gpt-sovits-v2pro-zh-qnn`](https://modelscope.cn/models/Yanguan/gpt-sovits-v2pro-zh-qnn)，包含 `vitsS_ctx.bin`（154.9 MiB，运行时推荐）、`libvitsS.so` + `vitsS.bin`（重新生成 context binary 用），README 里有 sha256、图 IO 表和实测耗时。取用方式：
+
+```bash
+# 命令行
+modelscope download --model Yanguan/gpt-sovits-v2pro-zh-qnn --local_dir /data/local/tmp/sovits-qnn
+# 或者宿主 / FFI 侧按仓库 id 下载（不在镜像表里 → 整仓下载）
+#   download_model_files("Yanguan/gpt-sovits-v2pro-zh-qnn", Some(dir), 3, DownloadCtl::default())
+```
+
+注意 QNN 运行库（`libQnnHtp*.so` / `libQnnSystem.so`）**不随该仓库分发**，要从 QAIRT SDK 取，或直接用设备上的 `/system_ext/lib64/litert`。
+
 排查结论（省得重复踩）：`QnnMem_register` 在 HTP v81 上只认 `QNN_MEM_TYPE_ION`（`QNN_MEM_TYPE_DMA_BUF` 直接回 `8001` = `QNN_MEM_ERROR_INVALID_HANDLE`），但用 ION memhandle 喂 IO 也**没能**绕过 1100；`tensorCreateContextTensor` / `tensorCreateGraphTensor` 对 finalized 的图不可用（前者报 `unsupported`，后者只能加在 `graphAddNode` 之前，也就是模型库的 compose 内部）；把 float32 IO 用 `DequantizeLinear/QuantizeLinear` 包成 uint16 也不行（转换器会在该 Reshape 上报 `MODEL_GRAPH_OP_VALIDATION_ERROR`，因为量化编码未定义）；`deviceCreate` 返回的句柄（真机上是 `0x1`）**不要**传给 `contextCreate`，会让 DSP 卡死在 `graphFinalize`，传 NULL 才正常；QNN 运行库也不要 `dlclose`，否则进程退出时会跳到已卸载的数据地址上崩掉（`qnn-net-run` 同样不卸载）。
 
 - GPT(T2S) 仍是 candle 逐 token 自回归，只有 `ref_enc + quantizer + enc_p + flow + HiFiGAN` 这一段进 HTP；

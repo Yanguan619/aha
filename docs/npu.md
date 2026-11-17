@@ -251,6 +251,17 @@ If this HTP route is ever restarted, do it in this order, each step independentl
 
 Convert with `--act-bw 32 --weight-bw 16` (float32 activations); `qnn_convert.py --build-so` then produces `libvitsF.so` + `vitsF.bin`, which must stay in the same directory, and `qnn-context-binary-generator --model libvitsF.so --output_dir . --binary_file vitsF_ctx.bin` turns that into the context binary used at runtime.
 
+**The conversion artifacts are published**: [`Yanguan/gpt-sovits-v2pro-zh-qnn`](https://modelscope.cn/models/Yanguan/gpt-sovits-v2pro-zh-qnn) holds `vitsS_ctx.bin` (154.9 MiB, the one to run), `libvitsS.so` + `vitsS.bin` (for regenerating the context binary), plus a README with sha256, the graph IO table and the measured timings. Fetch it with:
+
+```bash
+# CLI
+modelscope download --model Yanguan/gpt-sovits-v2pro-zh-qnn --local_dir /data/local/tmp/sovits-qnn
+# or from the host / FFI by repo id (no mirror entry → the whole repo)
+#   download_model_files("Yanguan/gpt-sovits-v2pro-zh-qnn", Some(dir), 3, DownloadCtl::default())
+```
+
+The QNN runtime libraries (`libQnnHtp*.so` / `libQnnSystem.so`) are **not** redistributed there — take them from the QAIRT SDK or use the device's `/system_ext/lib64/litert`.
+
 What did not work (so nobody repeats it): on HTP v81 `QnnMem_register` only accepts `QNN_MEM_TYPE_ION` (`QNN_MEM_TYPE_DMA_BUF` answers `8001` = `QNN_MEM_ERROR_INVALID_HANDLE`), yet feeding the IO as ION memhandles does **not** get around the 1100; `tensorCreateContextTensor` / `tensorCreateGraphTensor` cannot be used on a finalized graph (the first reports `unsupported`, the second only works before `graphAddNode`, i.e. inside the library's compose); wrapping the float32 IO in `DequantizeLinear`/`QuantizeLinear` fails in the converter (`MODEL_GRAPH_OP_VALIDATION_ERROR`, the quantization encoding of that Reshape is undefined); the handle `deviceCreate` returns (it is `0x1` on the test device) must **not** be passed to `contextCreate`, it hangs the DSP inside `graphFinalize` — pass NULL; and the QNN runtime libraries must not be `dlclose`d, otherwise the process jumps into unmapped memory at exit (`qnn-net-run` never unloads them either).
 
 - GPT (T2S) stays on candle — it is token-by-token autoregressive; only `ref_enc + quantizer + enc_p + flow + HiFiGAN` go to the HTP;
