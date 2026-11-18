@@ -15,7 +15,7 @@
 - 新增 `aha qnn`：不需要知道模型就能检查/执行一个 QAIRT 模型（图名、张量名、dtype、维度全从产物里读）；
   `--context <bin>` 读 context binary，`--model <libNAME.so>` 组合模型库，`--input NAME=FILE` 喂张量，
   `--out-dir` 写结果。底层是 `native/qnn/aha_qnn.c`（QNN 的接口结构体不能手写，
-  必须由 C 编译器保证布局）+ `src/models/common/qnn.rs`
+  必须由 C 编译器保证布局）+ `src/models/common/runtime/qnn.rs`
 - `aha qnn` / `AHA_SOVITS_QNN` 在进程内执行被 HTP 拒绝时自动回退：`graphExecute` 返回
   `Qnn_Common_Error_General (1100)`（DSP 侧 `Dma execution failed on the skel side`）时，把同样的输入
   写成 raw + `input_list.txt`，在产物目录里调 SDK 自带的 `qnn-net-run`，再把 `Result_0/<张量>.raw`

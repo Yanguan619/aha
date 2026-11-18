@@ -4,7 +4,7 @@
 //! 只把「24 层 transformer 一步」抓进图里，head / 采样 / 位置编码仍在图外逐 token 跑；
 //! kv cache 定长、每步原位写一个位置，注意力对整段算、靠 mask 屏蔽未来。
 //!
-//! 抓图/重放那套通用机制在 [`crate::models::common::cuda_graph`]，这里只做 AR 特有的编排：
+//! 抓图/重放那套通用机制在 [`crate::models::common::runtime::candle::cuda_graph`]，这里只做 AR 特有的编排：
 //!
 //! 1. candle 没有 `index_copy_`，用 [`Tensor::scatter_set`]（同样是原位写）代替。
 //!    注意它的索引是**写到哪一格**——整块拷贝要给 `0..H-1`，全 0 会把所有值挤到第 0 格。
@@ -23,7 +23,9 @@ use anyhow::{Result, bail};
 use candle_core::cuda_backend::cudarc::driver::CudaStream;
 use candle_core::{DType, Device, Tensor};
 
-use crate::models::common::cuda_graph::{CudaGraph, StaticTensor, static_zeros, upload_u32};
+use crate::models::common::runtime::candle::cuda_graph::{
+    CudaGraph, StaticTensor, static_zeros, upload_u32,
+};
 
 /// 一个已捕获的「AR 一步」+ 它的定长缓冲。
 pub(crate) struct ArGraph {

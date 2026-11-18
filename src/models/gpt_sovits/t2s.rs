@@ -30,7 +30,7 @@ use candle_nn::{Embedding, Linear, VarBuilder, embedding, linear, linear_no_bias
 use serde::Deserialize;
 
 #[cfg(feature = "cuda")]
-use crate::models::common::cuda_graph::StaticTensor;
+use crate::models::common::runtime::candle::cuda_graph::StaticTensor;
 use crate::models::common::sample::simple_sample;
 #[cfg(feature = "cuda")]
 use crate::models::gpt_sovits::ar_graph::ArGraph;

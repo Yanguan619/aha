@@ -2,17 +2,19 @@
 //!
 //! 目的：一帧里大半时间花在「几百个小 kernel 的启动 + 逐算子分配」上，图能把这段摊掉。
 //!
-//! 抓图/重放/静态缓冲那套通用机制在 [`crate::models::common::cuda_graph`]（GPT-SoVITS 的
+//! 抓图/重放/静态缓冲那套通用机制在 [`crate::models::common::runtime::candle::cuda_graph`]（GPT-SoVITS 的
 //! AR 也用它）。这里只剩 VLA 特有的部分：两个固定输入（像素 `(1, V, 3, H, W)`、状态
 //! `(1, state_dim)`），每帧把新数据写进原地缓冲再重放。
 //!
 //! 图内外的分工是**类型**说了算：`compute` 只拿得到 `&StaticTensor`（图烧死了地址），
 //! 图外的图像解码、文本特征、动作后处理都是普通 `Tensor`。
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use candle_core::{DType, Device, Tensor};
 
-use crate::models::common::cuda_graph::{static_zeros, upload_f32, CudaGraph, StaticTensor};
+use crate::models::common::runtime::candle::cuda_graph::{
+    CudaGraph, StaticTensor, static_zeros, upload_f32,
+};
 
 /// 一个已被捕获的图 + 它的静态输入/输出。
 pub struct GraphRunner {

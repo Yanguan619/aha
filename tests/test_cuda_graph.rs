@@ -1,9 +1,11 @@
-//! `models/common/cuda_graph.rs` 的自检：抓一张 `y = x * 2 + 1`，改输入后重放，
+//! `models/common/runtime/candle/cuda_graph.rs` 的自检：抓一张 `y = x * 2 + 1`，改输入后重放，
 //! 结果要跟着变（证明图烧死的是那块静态缓冲，而不是拷了一份）。
 //!
 //! 不需要任何模型权重，有 CUDA 就能跑；没有就跳过。
 
-use aha::models::common::cuda_graph::{static_zeros, upload_f32, upload_u32, CudaGraph};
+use aha::models::common::runtime::candle::cuda_graph::{
+    CudaGraph, static_zeros, upload_f32, upload_u32,
+};
 use anyhow::Result;
 use candle_core::{DType, Device};
 

@@ -18,13 +18,13 @@ pub const DEFAULT_REPEAT_PENALTY: f32 = 1.05;
 /// `<｜hy_place▁holder▁no▁2｜>` 结束，最后补一个 `<｜hy_Assistant｜>` 让模型续写。
 ///
 /// llama.cpp 只认几种内置模板，所以由本模块按模型自己的模板渲染，再通过
-/// [`crate::models::common::llama_cpp::LlamaCppModel::init_with_prompt_renderer`]
+/// [`crate::models::common::runtime::llama_cpp::LlamaCppModel::init_with_prompt_renderer`]
 /// 挂到通用 llama.cpp 后端上——后端本身不需要知道 Hy-MT2。
 #[cfg(feature = "llama")]
 mod chat_template {
     use std::ffi::CString;
 
-    use crate::models::common::llama_cpp::RenderedPrompt;
+    use crate::models::common::runtime::llama_cpp::RenderedPrompt;
 
     pub const BOS: &str = "<｜hy_begin▁of▁sentence｜>";
     pub const USER: &str = "<｜hy_User｜>";

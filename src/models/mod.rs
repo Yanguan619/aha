@@ -125,7 +125,7 @@ pub enum ModelInstance<'a> {
     GptSovits(crate::models::gpt_sovits::GptSovitsModel),
     /// llama.cpp 托管的 GGUF（如 Hy-MT2 的 STQ 量化）：架构/量化都由 llama.cpp 负责。
     #[cfg(feature = "llama")]
-    LlamaCpp(crate::models::common::llama_cpp::LlamaCppModel),
+    LlamaCpp(crate::models::common::runtime::llama_cpp::LlamaCppModel),
 }
 
 impl<'a> GenerateModel for ModelInstance<'a> {
@@ -324,7 +324,7 @@ pub fn load_gguf_model<'a>(
             {
                 // STQ 量化只有 llama.cpp（带 PR #22836 的构建）能解析；mmproj 对文本翻译模型没有意义。
                 let model =
-                    crate::models::common::llama_cpp::LlamaCppModel::init_with_prompt_renderer(
+                    crate::models::common::runtime::llama_cpp::LlamaCppModel::init_with_prompt_renderer(
                         gguf_path,
                         n_ctx,
                         threads,

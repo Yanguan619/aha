@@ -5,7 +5,7 @@ use std::time::Instant;
 use anyhow::Result;
 
 use crate::models::GenerateModel;
-use crate::models::common::llama_cpp::LlamaCppModel;
+use crate::models::common::runtime::llama_cpp::LlamaCppModel;
 use crate::models::hy_mt2;
 use crate::utils::get_file_path;
 

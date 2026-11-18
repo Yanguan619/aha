@@ -556,7 +556,7 @@ pub(crate) fn run_npu(args: NpuArgs) -> anyhow::Result<()> {
 /// 张量按名字写成 `.bin`（float32 的话可以直接当 numpy 读）。
 #[cfg(feature = "qnn")]
 pub(crate) fn run_qnn(args: QnnArgs) -> anyhow::Result<()> {
-    use aha::models::common::qnn::{self, Runtime};
+    use aha::models::common::runtime::qnn::{self, Runtime};
     use std::time::Instant;
 
     let QnnArgs {

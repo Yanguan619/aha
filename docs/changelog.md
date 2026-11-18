@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dtypes and dims all come from the artifact); `--context <bin>` reads a context binary,
   `--model <libNAME.so>` composes a model library, `--input NAME=FILE` feeds tensors and
   `--out-dir` writes results. Backed by `native/qnn/aha_qnn.c` (a small C shim, because QNN's
-  interface structs must not be re-declared by hand) and `src/models/common/qnn.rs`
+  interface structs must not be re-declared by hand) and `src/models/common/runtime/qnn.rs`
 - `aha qnn` / `AHA_SOVITS_QNN` fall back automatically when the HTP refuses in-process execution:
   on `Qnn_Common_Error_General (1100)` (`Dma execution failed on the skel side` on the DSP) the
   same inputs are written as raw files plus an `input_list.txt`, the SDK's own `qnn-net-run` runs

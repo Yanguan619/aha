@@ -18,7 +18,7 @@ use std::path::Path;
 
 use anyhow::{Result, anyhow};
 
-use crate::models::common::qnn::{self, Runtime};
+use crate::models::common::runtime::qnn::{self, Runtime};
 
 /// 图里 codes 的固定帧数。
 pub const NUM_CODES: usize = 64;
@@ -223,7 +223,7 @@ fn is_model_lib(path: &Path) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("so"))
 }
 
-fn names(ts: &[crate::models::common::qnn::TensorInfo]) -> String {
+fn names(ts: &[crate::models::common::runtime::qnn::TensorInfo]) -> String {
     ts.iter()
         .map(|t| format!("{} {:?}", t.name, t.dims))
         .collect::<Vec<_>>()

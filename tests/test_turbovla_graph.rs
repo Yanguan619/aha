@@ -1,6 +1,6 @@
 //! VLA 的抓图路径 vs 逐算子路径，同一份输入下动作必须一致。
 //!
-//! 抓图机制在 `models/common/cuda_graph.rs`（GPT-SoVITS 的 AR 也用它），
+//! 抓图机制在 `models/common/runtime/candle/cuda_graph.rs`（GPT-SoVITS 的 AR 也用它），
 //! 这个测试是 VLA 那侧的守门员。设 `AHA_VLA_DIR` 才跑（要加载两次模型）。
 
 use aha::models::turbovla::TurboVlaModel;
@@ -13,10 +13,8 @@ fn image() -> Result<Vec<u8>> {
         *px = image::Rgb([(x % 256) as u8, (y % 256) as u8, 128]);
     }
     let mut png = Vec::new();
-    image::DynamicImage::ImageRgb8(img).write_to(
-        &mut std::io::Cursor::new(&mut png),
-        image::ImageFormat::Png,
-    )?;
+    image::DynamicImage::ImageRgb8(img)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)?;
     Ok(png)
 }
 
