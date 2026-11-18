@@ -13,7 +13,7 @@ use crate::{
         start_http_server,
     },
 };
-use aha::exec::*;
+mod exec;
 use aha::{
     models::{common::model_mapping::WhichModel, download::download_model},
     utils::{
@@ -827,31 +827,31 @@ pub(crate) fn run_run(args: RunArgs) -> anyhow::Result<()> {
     };
     match model {
         WhichModel::AllMiniLML6V2 => {
-            all_minilm_l6_v2::AllMiniLML6V2Exec::run(&input, output.as_deref(), &weight_path)?;
+            exec::all_minilm_l6_v2::run(&input, output.as_deref(), &weight_path)?;
         }
         WhichModel::MiniCPM4_0_5B => {
-            minicpm4::MiniCPM4Exec::run(&input, output.as_deref(), &weight_path)?;
+            exec::minicpm4::run(&input, output.as_deref(), &weight_path)?;
         }
         WhichModel::MiniCPM5_1B => {
-            minicpm5::MiniCPM5Exec::run(&input, output.as_deref(), &weight_path)?;
+            exec::minicpm5::run(&input, output.as_deref(), &weight_path)?;
         }
         WhichModel::LFM2_1_2B | WhichModel::LFM2_5_1_2BInstruct => {
-            lfm2::Lfm2Exec::run(&input, output.as_deref(), &weight_path)?;
+            exec::lfm2::run(&input, output.as_deref(), &weight_path)?;
         }
         WhichModel::LFM2_5VL1_6B | WhichModel::LFM2VL1_6B | WhichModel::LFM2_5VL450M => {
-            lfm2vl::Lfm2VLExec::run(&input, output.as_deref(), &weight_path)?;
+            exec::lfm2vl::run(&input, output.as_deref(), &weight_path)?;
         }
         WhichModel::Qwen2_5VL3B | WhichModel::Qwen2_5VL7B => {
-            qwen2_5vl::Qwen2_5VLExec::run(&input, output.as_deref(), &weight_path)?;
+            exec::qwen2_5vl::run(&input, output.as_deref(), &weight_path)?;
         }
         WhichModel::Qwen3_0_6B | WhichModel::Qwen3_1_7B | WhichModel::Qwen3_4B => {
-            qwen3::Qwen3Exec::run(&input, output.as_deref(), &weight_path)?;
+            exec::qwen3::run(&input, output.as_deref(), &weight_path)?;
         }
         WhichModel::Qwen3_5_0_8B
         | WhichModel::Qwen3_5_2B
         | WhichModel::Qwen3_5_4B
         | WhichModel::Qwen3_5_9B => {
-            qwen3_5::Qwen3_5Exec::run(&input, output.as_deref(), &weight_path)?;
+            exec::qwen3_5::run(&input, output.as_deref(), &weight_path)?;
         }
         WhichModel::Qwen3_5Gguf => {
             let (gguf_path, mmproj_path) = match path_common.gguf_path {
@@ -869,12 +869,7 @@ pub(crate) fn run_run(args: RunArgs) -> anyhow::Result<()> {
                     (gguf, mmproj)
                 }
             };
-            qwen3_5::Qwen3_5Exec::run_gguf(
-                &input,
-                output.as_deref(),
-                Some(gguf_path),
-                mmproj_path,
-            )?;
+            exec::qwen3_5::run_gguf(&input, output.as_deref(), Some(gguf_path), mmproj_path)?;
         }
         WhichModel::HyMT2Gguf => {
             let (gguf_path, _mmproj) = match path_common.gguf_path {
@@ -890,7 +885,7 @@ pub(crate) fn run_run(args: RunArgs) -> anyhow::Result<()> {
             };
             #[cfg(feature = "llama")]
             {
-                llama_cpp::LlamaCppExec::run_gguf(
+                exec::llama_cpp::run_gguf(
                     &input,
                     output.as_deref(),
                     &gguf_path,
@@ -908,59 +903,59 @@ pub(crate) fn run_run(args: RunArgs) -> anyhow::Result<()> {
             }
         }
         WhichModel::Qwen3ASR0_6B | WhichModel::Qwen3ASR1_7B => {
-            qwen3_asr::Qwen3ASRExec::run(&input, output.as_deref(), &weight_path)?;
+            exec::qwen3_asr::run(&input, output.as_deref(), &weight_path)?;
         }
         WhichModel::Qwen3Embedding0_6B
         | WhichModel::Qwen3Embedding4B
         | WhichModel::Qwen3Embedding8B => {
-            qwen3_embedding::Qwen3EmbeddingExec::run(&input, output.as_deref(), &weight_path)?;
+            exec::qwen3_embedding::run(&input, output.as_deref(), &weight_path)?;
         }
         WhichModel::Qwen3Reranker0_6B
         | WhichModel::Qwen3Reranker4B
         | WhichModel::Qwen3Reranker8B => {
-            qwen3_reranker::Qwen3RerankerExec::run(&input, output.as_deref(), &weight_path)?;
+            exec::qwen3_reranker::run(&input, output.as_deref(), &weight_path)?;
         }
         WhichModel::Qwen3VL2B
         | WhichModel::Qwen3VL4B
         | WhichModel::Qwen3VL8B
         | WhichModel::Qwen3VL32B => {
-            qwen3vl::Qwen3VLExec::run(&input, output.as_deref(), &weight_path)?;
+            exec::qwen3vl::run(&input, output.as_deref(), &weight_path)?;
         }
         WhichModel::DeepSeekOCR | WhichModel::DeepSeekOCR2 => {
-            deepseek_ocr::DeepSeekORExec::run(&input, output.as_deref(), &weight_path)?;
+            exec::deepseek_ocr::run(&input, output.as_deref(), &weight_path)?;
         }
         WhichModel::HunyuanOCR => {
-            hunyuan_ocr::HunyuanORExec::run(&input, output.as_deref(), &weight_path)?;
+            exec::hunyuan_ocr::run(&input, output.as_deref(), &weight_path)?;
         }
         WhichModel::PaddleOCRVL | WhichModel::PaddleOCRVL1_5 | WhichModel::PaddleOCRVL1_6 => {
-            paddleocr_vl::PaddleOVLExec::run(&input, output.as_deref(), &weight_path)?;
+            exec::paddleocr_vl::run(&input, output.as_deref(), &weight_path)?;
         }
         WhichModel::RMBG2_0 => {
-            rmbg2_0::RMBG2_0Exec::run(&input, output.as_deref(), &weight_path)?;
+            exec::rmbg2_0::run(&input, output.as_deref(), &weight_path)?;
         }
         WhichModel::VoxCPM | WhichModel::VoxCPM1_5 | WhichModel::VoxCPM2 => {
-            voxcpm::VoxCPMExec::run(&input, output.as_deref(), &weight_path)?;
+            exec::voxcpm::run(&input, output.as_deref(), &weight_path)?;
         }
         WhichModel::GlmASRNano2512 => {
-            glm_asr_nano::GlmASRNanoExec::run(&input, output.as_deref(), &weight_path)?;
+            exec::glm_asr_nano::run(&input, output.as_deref(), &weight_path)?;
         }
         WhichModel::FunASRNano2512 => {
-            fun_asr_nano::FunASRNanoExec::run(&input, output.as_deref(), &weight_path)?;
+            exec::fun_asr_nano::run(&input, output.as_deref(), &weight_path)?;
         }
         WhichModel::GlmOCR => {
-            glm_ocr::GlmOcrExec::run(&input, output.as_deref(), &weight_path)?;
+            exec::glm_ocr::run(&input, output.as_deref(), &weight_path)?;
         }
         #[cfg(feature = "sherpa-asr")]
         WhichModel::SenseVoice => {
-            sense_voice::SenseVoiceExec::run(&input, output.as_deref(), &weight_path)?;
+            exec::sense_voice::run(&input, output.as_deref(), &weight_path)?;
         }
         #[cfg(feature = "sherpa-tts")]
         WhichModel::Kokoro => {
-            kokoro::KokoroExec::run(&input, output.as_deref(), &weight_path)?;
+            exec::kokoro::run(&input, output.as_deref(), &weight_path)?;
         }
         #[cfg(feature = "gpt-sovits")]
         WhichModel::GptSovits => {
-            gpt_sovits::GptSovitsExec::run_with_device(
+            exec::gpt_sovits::run_with_device(
                 &input,
                 output.as_deref(),
                 &weight_path,

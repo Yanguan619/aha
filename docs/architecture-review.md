@@ -54,12 +54,23 @@ CJK 判断、语言码映射、ASR 响应清洗、目录大小、字节格式化
 `pub use`（调用点无需改动）。`prepare_tts_text` / `clean_asr_response` 最终应回到
 `gpt_sovits` / `qwen3_asr` 的文本前端——模型方言不该在通用 utils 里。
 
-### P1-1 `exec/` 与 `models/` 并行 + 三个重叠 trait
+### P1-1 `exec/` 与 `models/` 并行 + 三个重叠 trait（已处理）
 
-`exec/` 平均 64 行，干的是"CLI 参数 → 模型调用"的翻译，本质是命令实现。
-[cli/mod.rs] 还用 `use aha::exec::*;` 做 glob 导入，依赖不可见。
+`exec/` 只被 `cli` 一个地方用（`use aha::exec::*` glob），却摆在 **lib** 层当第四套注册表。
+而且那个 `ExecModel` trait 是**假抽象**：`run` 签名里没有 `self`（纯静态方法），25 个
+`XxxExec` 结构体从来没被实例化过——trait 只起到"命名空间"的作用。
 
-**目标**：三个 trait 合成一个；`exec/` 降级为命令层（`cli/commands/`）；禁 glob 导入。
+**已做**：
+- 删掉 `ExecModel` trait 和 25 个 `XxxExec` 空结构体，`impl ExecModel for XxxExec { fn run(..) }`
+  摊平成模块级 `pub fn run(..)`（`gpt_sovits` 的 `run_with_device`、`qwen3_5`/`llama_cpp` 的
+  `run_gguf` 同样处理；`Self::` 引用跟着改成函数名）
+- `src/exec/` → `src/cli/exec/`：`lib.rs` 不再导出它，`cli/mod.rs` 改 `mod exec;`，
+  搬过去的文件 `crate::models|utils` → `aha::models|utils`（从 lib 模块变成 bin 模块）
+- 干掉 glob 导入：调用点从 `kokoro::KokoroExec::run` 变成 `exec::kokoro::run`，依赖可见
+
+**没做**：合并 `InferenceModel` / `GenerateModel` / `ExecModel` 三个 trait。前两个是真 trait
+（有 `self`、被 `ModelInstance` 的每个变体实现），`ExecModel` 已删，所以"三个重叠"已经变成
+"两个各司其职"，没必要再动。
 
 ### P1-2 `model_mapping.rs` 的谓词（已处理一部分）
 
