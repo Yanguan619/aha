@@ -37,12 +37,7 @@ pub mod video_utils;
 use std::fs::File;
 use std::io::{Cursor, Read};
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::{
-    collections::HashMap,
-    fs,
-    path::PathBuf,
-    process::Command,
-};
+use std::{collections::HashMap, fs, path::PathBuf, process::Command};
 
 use crate::models::common::model_mapping::WhichModel;
 use crate::params::chat::{
