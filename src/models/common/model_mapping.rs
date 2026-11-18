@@ -139,7 +139,7 @@ impl WhichModel {
 
     /// Models served through sherpa-onnx 的权重在 ModelScope 上是社区镜像
     /// （官方 `csukuangfj/...` 那边没有同名仓库），见
-    /// [`crate::models::common::sherpa`]；也可以用 `--weight-path` 指向本地目录。
+    /// [`crate::models::common::runtime::sherpa`]；也可以用 `--weight-path` 指向本地目录。
     ///
     /// 只编了其中一个后端时枚举里也只有对应的变体，所以按 feature 分开写。
     #[cfg(any(feature = "sherpa-asr", feature = "sherpa-tts"))]

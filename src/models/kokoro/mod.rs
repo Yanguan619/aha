@@ -131,7 +131,7 @@ impl KokoroTtsModel {
                     ..Default::default()
                 },
                 num_threads,
-                provider: crate::models::common::sherpa::onnx_provider(),
+                provider: crate::models::common::runtime::sherpa::onnx_provider(),
                 ..Default::default()
             },
             ..Default::default()

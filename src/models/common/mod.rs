@@ -11,8 +11,6 @@ pub mod reranker;
 /// 外部 C 运行时后端（QNN / llama.cpp）：不认模型，只负责把图或生成跑起来。
 pub mod runtime;
 pub mod sample;
-#[cfg(any(feature = "sherpa-asr", feature = "sherpa-tts"))]
-pub mod sherpa;
 
 /// 多模态模型的特征数据
 /// 每个模型数据不一样

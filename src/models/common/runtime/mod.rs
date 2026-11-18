@@ -5,6 +5,10 @@
 //! prompt 模板、特殊 token 由模型模块通过钩子注入（见 `PromptRenderer`），这里不写
 //! `if 模型 == X` 分支。
 
+/// sherpa-onnx 后端：ASR / TTS 交给 ONNX Runtime，provider 由 `--provider` 决定。
+#[cfg(any(feature = "sherpa-asr", feature = "sherpa-tts"))]
+pub mod sherpa;
+
 /// candle 自己的运行时设施（CUDA graph 抓图 / 重放，只在 `cuda` 下有意义）。
 #[cfg(feature = "cuda")]
 pub mod candle;

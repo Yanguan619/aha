@@ -213,7 +213,7 @@ async fn pet_model_or_download(
     if model.is_sherpa_model() {
         let dir = format!("{save_dir}/{model_id}");
         tracing::info!(dir = %dir, "检查 sherpa 模型文件（ModelScope 镜像）");
-        aha::models::common::sherpa::ensure_downloaded(&dir, model).await?;
+        aha::models::common::runtime::sherpa::ensure_downloaded(&dir, model).await?;
         return Ok(Some(dir));
     }
     #[cfg(feature = "laya")]
@@ -372,7 +372,7 @@ pub(crate) async fn run_serv(args: ServArgs) -> anyhow::Result<()> {
     #[cfg(any(feature = "sherpa-asr", feature = "sherpa-tts"))]
     if model.is_sherpa_model() {
         tracing::info!(dir = %model_path, model = %model.as_string(), "检查 sherpa 模型文件");
-        aha::models::common::sherpa::ensure_downloaded(&model_path, model).await?;
+        aha::models::common::runtime::sherpa::ensure_downloaded(&model_path, model).await?;
     }
     #[cfg(feature = "laya")]
     if model.is_laya_model() {
@@ -439,7 +439,7 @@ pub(crate) async fn run_multi(args: MultiArgs) -> anyhow::Result<()> {
     #[cfg(feature = "sherpa-asr")]
     if let Some(dir) = asr.as_deref() {
         tracing::info!(dir = %dir, role = "asr", "检查 sherpa 模型文件");
-        aha::models::common::sherpa::ensure_downloaded(dir, WhichModel::SenseVoice).await?;
+        aha::models::common::runtime::sherpa::ensure_downloaded(dir, WhichModel::SenseVoice).await?;
         specs.push(ModelSpec::new("asr", WhichModel::SenseVoice, dir));
     }
     #[cfg(not(feature = "sherpa-asr"))]
@@ -459,7 +459,7 @@ pub(crate) async fn run_multi(args: MultiArgs) -> anyhow::Result<()> {
         #[cfg(any(feature = "sherpa-asr", feature = "sherpa-tts"))]
         if tts_model.is_sherpa_model() {
             tracing::info!(dir = %dir, role = "tts", "检查 sherpa 模型文件");
-            aha::models::common::sherpa::ensure_downloaded(dir, tts_model).await?;
+            aha::models::common::runtime::sherpa::ensure_downloaded(dir, tts_model).await?;
         }
         specs.push(ModelSpec::new("tts", tts_model, dir));
     }
