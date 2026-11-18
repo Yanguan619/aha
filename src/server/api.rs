@@ -150,9 +150,6 @@ fn load_one(spec: &ModelSpec, opts: &InitOptions) -> anyhow::Result<StoredModel>
                 threads,
             )?,
         }
-    } else if model_type.is_onnx() && !model_type.is_pet_delegated_model() {
-        // 桌宠三个模型走 sherpa/sys1，不进 onnx 门禁（SenseVoice 的 id 里就带 "onnx"）
-        return Err(anyhow!("onnx comming soon but now not support"));
     } else {
         #[cfg(feature = "laya")]
         if model_type.is_laya_model() {

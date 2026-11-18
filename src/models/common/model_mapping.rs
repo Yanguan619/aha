@@ -121,20 +121,12 @@ impl WhichModel {
             .to_string()
     }
 
-    /// Checks if the model is in GGUF format
+    /// GGUF 权重（走 candle 的 gguf 加载器或 llama.cpp 后端）。
     ///
-    /// Returns true if the model ID contains "gguf", false otherwise
+    /// 以前是拿 model id 里有没有 "gguf" 来判断，等于让**展示名**决定后端路由：
+    /// 谁改一下 id（比如去掉 `-gguf` 后缀）就会静悄悄地换掉加载路径。这里显式列变体。
     pub fn is_gguf(&self) -> bool {
-        let model_id = self.as_string();
-        model_id.to_lowercase().contains("gguf")
-    }
-
-    /// Checks if the model is in ONNX format
-    ///
-    /// Returns true if the model ID contains "onnx", false otherwise
-    pub fn is_onnx(&self) -> bool {
-        let model_id = self.as_string();
-        model_id.to_lowercase().contains("onnx")
+        matches!(self, WhichModel::Qwen3_5Gguf | WhichModel::HyMT2Gguf)
     }
 
     /// Models served through sherpa-onnx 的权重在 ModelScope 上是社区镜像
@@ -172,28 +164,6 @@ impl WhichModel {
     #[cfg(feature = "gpt-sovits")]
     pub fn is_gpt_sovits_model(&self) -> bool {
         matches!(self, WhichModel::GptSovits)
-    }
-
-    /// 桌宠委托的模型（SenseVoice / Kokoro / Laya）。
-    ///
-    /// 它们由 sherpa/sys1 推理，**不走 onnx 门禁**——尤其是 SenseVoice 的模型 id 里
-    /// 就带 "onnx"（`sherpa-onnx-...`），会被 [`Self::is_onnx`] 误判成"onnx 模型不支持"。
-    #[cfg(any(feature = "sherpa-asr", feature = "sherpa-tts", feature = "laya"))]
-    pub fn is_pet_delegated_model(&self) -> bool {
-        #[cfg(any(feature = "sherpa-asr", feature = "sherpa-tts"))]
-        if self.is_sherpa_model() {
-            return true;
-        }
-        #[cfg(feature = "laya")]
-        if self.is_laya_model() {
-            return true;
-        }
-        false
-    }
-
-    #[cfg(not(any(feature = "sherpa-asr", feature = "sherpa-tts", feature = "laya")))]
-    pub fn is_pet_delegated_model(&self) -> bool {
-        false
     }
 
     /// 对外展示的模型名（OpenAI `/v1/models` 用）。
@@ -294,5 +264,21 @@ impl WhichModel {
             #[cfg(feature = "vla")]
             WhichModel::TurboVla => "vla",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WhichModel;
+
+    /// `is_gguf` 以前判断"model id 里含不含 gguf"，等于让**展示名**决定后端路由：
+    /// 谁改一下 id 就会静悄悄地换掉加载路径。回归守住"只有这两个变体算 GGUF"。
+    #[test]
+    fn gguf_is_decided_by_variant_not_by_id() {
+        assert!(WhichModel::Qwen3_5Gguf.is_gguf());
+        assert!(WhichModel::HyMT2Gguf.is_gguf());
+        assert!(!WhichModel::Qwen3_0_6B.is_gguf());
+        #[cfg(feature = "sherpa-asr")]
+        assert!(!WhichModel::SenseVoice.is_gguf());
     }
 }

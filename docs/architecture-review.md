@@ -61,13 +61,20 @@ CJK 判断、语言码映射、ASR 响应清洗、目录大小、字节格式化
 
 **目标**：三个 trait 合成一个；`exec/` 降级为命令层（`cli/commands/`）；禁 glob 导入。
 
-### P1-2 `model_mapping.rs` 是 god enum
+### P1-2 `model_mapping.rs` 的谓词（已处理一部分）
 
-9 个 `is_*` 谓词 + `as_string` / `display_name` / `model_list` / `model_owner` /
-`model_type`，每个谓词都是对 49 个变体的 match；`is_pet_delegated_model` 在
-182/195 行各定义一份（cfg 互斥）。
+**更正**：早先写的"9 个谓词每个都是对 49 个变体的 match"是错的——那 54 处 `WhichModel::`
+大部分来自枚举定义和 `model_type()`，谓词本身多是 `matches!`。真正的问题只有两个：
 
-**目标**：谓词变成表里的数据字段（`kind: ModelKind`、`pet_delegated: bool`）。
+1. `is_gguf()` / `is_onnx()` 靠 **model id 字符串**判断（`id.contains("gguf")`），等于让展示名
+   决定后端路由：改一下 id 就可能静悄悄换掉加载路径。`is_onnx()` 更糟——它只命中 SenseVoice
+   （id 里有 `sherpa-onnx`），而 SenseVoice 恰好是"pet delegated"，所以唯一的三处调用
+   `is_onnx() && !is_pet_delegated_model()` **永远为假**，是死分支。
+2. `is_pet_delegated_model` 有两个 cfg 互斥的定义——它存在的唯一理由就是给上面那个死分支兜底。
+
+**已做**：`is_gguf` 改成显式列变体；`is_onnx` / `is_pet_delegated_model` 连同三处死分支一起删掉；
+加了一条回归测试（`gguf_is_decided_by_variant_not_by_id`）。`model_type()` 保留原样——它确实
+是一张"模型 → 类型"的表，属于数据，不是坏味道；合并它的机会在 P0-1。
 
 ### P1-3 通用层里的 `if 模型 == X`
 

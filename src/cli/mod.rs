@@ -287,9 +287,6 @@ pub(crate) async fn run_cli(args: CliArgs) -> anyhow::Result<()> {
         )
         .await?;
         ("GGUF".to_string(), Some(gguf), mmproj)
-    } else if model.is_onnx() && !model.is_pet_delegated_model() {
-        // 桌宠模型走 sherpa/sys1，不进 onnx 门禁（SenseVoice 的 id 里就带 "onnx"）
-        return Err(anyhow!("onnx model not support now"));
     } else {
         let model_path = match path_common.weight_path {
             Some(path) => path,
@@ -356,9 +353,6 @@ pub(crate) async fn run_serv(args: ServArgs) -> anyhow::Result<()> {
         let (gguf, mmproj) =
             gguf_or_download(model, None, path_common.gguf_path, path_common.mmproj_path).await?;
         (Some(gguf), mmproj)
-    } else if model.is_onnx() && !model.is_pet_delegated_model() {
-        // 桌宠模型走 sherpa/sys1，不进 onnx 门禁（SenseVoice 的 id 里就带 "onnx"）
-        return Err(anyhow!("onnx model not support now"));
     } else {
         match weight_path.clone() {
             Some(path) => model_path = path,
