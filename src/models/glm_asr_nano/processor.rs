@@ -26,9 +26,9 @@ pub struct GlmAsrNanoProcessor {
     whisper_feature_extrator: WhisperFeatureExtractor,
 }
 
-#[allow(unused)]
+#[allow(dead_code)]
 impl GlmAsrNanoProcessor {
-    pub fn new(path: &str, device: &Device, dtype: DType) -> Result<Self> {
+    pub fn new(path: &str, device: &Device, _dtype: DType) -> Result<Self> {
         let path = path.to_string();
         assert!(
             std::path::Path::new(&path).exists(),

@@ -557,7 +557,7 @@ impl SwinTransformer {
     }
 }
 
-#[allow(unused)]
+#[allow(dead_code)]
 struct DeformableConv2d {
     offset_conv: Conv2d,
     modulator_conv: Conv2d,
@@ -567,7 +567,7 @@ struct DeformableConv2d {
     ks: usize,
 }
 
-#[allow(unused)]
+#[allow(dead_code)]
 impl DeformableConv2d {
     pub fn new(
         vb: VarBuilder,

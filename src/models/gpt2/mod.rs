@@ -188,7 +188,7 @@ impl GPT2Block {
     }
 }
 
-#[allow(unused)]
+#[allow(dead_code)]
 pub struct GPT2Model {
     pub wte: Option<Embedding>,
     // wpe: Embedding, //rope not need
@@ -197,7 +197,7 @@ pub struct GPT2Model {
     rope: Option<RoPE>,
 }
 
-#[allow(unused)]
+#[allow(dead_code)]
 impl GPT2Model {
     pub fn new(
         vb: VarBuilder,
@@ -230,7 +230,7 @@ impl GPT2Model {
         hidden_size: usize,
         num_heads: usize,
         num_hidden_layers: usize,
-        vocab_size: usize,
+        _vocab_size: usize,
         // n_positions: usize,
     ) -> Result<Self> {
         let wte = None;

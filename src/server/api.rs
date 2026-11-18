@@ -52,6 +52,9 @@ static ALLOW_REMOTE_SHUTDOWN: OnceLock<bool> = OnceLock::new();
 
 /// 服务端初始化选项（只对桌宠三件套有意义，其余模型忽略）。
 #[derive(Debug, Clone, Default)]
+// `vla_device` / `min_confidence` / `request_timeout_ms` 分别只在 `vla` / `laya`
+// 特性下被读取；没编那些特性时它们是"传了但用不上"，不是死字段。
+#[cfg_attr(not(any(feature = "laya", feature = "vla")), allow(dead_code))]
 pub struct InitOptions {
     /// Laya 推理设备（cpu / cuda，编译期特征校验）。
     pub device: String,
@@ -104,6 +107,7 @@ impl ModelSpec {
 }
 
 /// 把 `--vla-device` 的字符串翻成 candle 设备；`cpu`/空 走 CPU（`None`）。
+#[cfg_attr(not(feature = "vla"), allow(dead_code))]
 fn vla_device(requested: &str) -> anyhow::Result<Option<Device>> {
     match requested.trim() {
         "" | "cpu" => Ok(None),
@@ -159,7 +163,7 @@ fn load_one(spec: &ModelSpec, opts: &InitOptions) -> anyhow::Result<StoredModel>
                 if opts.min_confidence > 0.0 {
                     opts.min_confidence
                 } else {
-                    aha::models::laya::route::MIN_CONFIDENCE
+                    aha::models::laya::MIN_CONFIDENCE
                 },
                 opts.request_timeout_ms,
                 opts.threads,
@@ -229,6 +233,10 @@ fn is_laya_spec(spec: &ModelSpec) -> bool {
 
 /// 模型类型 → 角色/类名（SenseVoice→asr、Kokoro→tts、Laya→system1）。
 /// `/v1/*` 端点按这个类名取模型；单模型 `serv --model <x>` 也会自动注册。
+#[cfg_attr(
+    not(any(feature = "sherpa-asr", feature = "sherpa-tts", feature = "laya")),
+    allow(unused_variables)
+)]
 fn role_of(model: WhichModel) -> Option<&'static str> {
     #[cfg(feature = "sherpa-asr")]
     if matches!(model, WhichModel::SenseVoice) {
@@ -422,7 +430,7 @@ pub fn set_server_port(port: u16, allow_remote_shutdown: bool) {
     ALLOW_REMOTE_SHUTDOWN.get_or_init(|| allow_remote_shutdown);
 }
 
-#[allow(unused)]
+#[allow(dead_code)]
 pub fn get_shutdown_flag() -> Arc<AtomicBool> {
     SHUTDOWN_FLAG
         .get_or_init(|| Arc::new(AtomicBool::new(false)))

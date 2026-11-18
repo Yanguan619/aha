@@ -48,7 +48,7 @@ impl Wav2Vec2BertFeatureProjection {
     }
 }
 
-#[allow(unused)]
+#[allow(dead_code)]
 pub struct Wav2Vec2BertSelfAttention {
     q_proj: Linear,
     k_proj: Linear,

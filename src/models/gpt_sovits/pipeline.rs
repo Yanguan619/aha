@@ -90,6 +90,7 @@ pub struct GptSovitsModel {
     t2s: Text2Semantic,
     sovits: Sovits,
     /// SoVITS 解码链的 QNN 实现（`AHA_SOVITS_QNN` 指向 context binary 时才 Some）。
+    #[cfg_attr(not(feature = "qnn"), allow(dead_code))]
     sovits_qnn: Option<SovitsQnn>,
     voices: HashMap<String, VoiceConfig>,
     default_voice: Option<String>,

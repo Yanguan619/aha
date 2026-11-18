@@ -25,7 +25,7 @@ impl MultiModalData {
     }
 }
 
-#[allow(unused)]
+#[allow(dead_code)]
 pub trait InferenceModel {
     /// 初始前向传播（考虑多模态输入）
     /// 默认实现无特殊数据
@@ -33,7 +33,7 @@ pub trait InferenceModel {
         &mut self,
         input_ids: &Tensor,
         seqlen_offset: usize,
-        data: MultiModalData,
+        _data: MultiModalData,
     ) -> Result<Tensor> {
         Self::forward_step(self, input_ids, seqlen_offset)
     }

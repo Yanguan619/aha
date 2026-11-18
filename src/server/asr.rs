@@ -320,6 +320,7 @@ pub(crate) fn check_pcm_request(headers: &HeaderMap, len: usize) -> Option<Strin
 }
 
 /// PCM16LE → 归一化 f32（模型要的输入）。
+#[cfg_attr(not(feature = "sherpa-asr"), allow(dead_code))]
 pub(crate) fn pcm_to_samples(pcm: &[u8]) -> Vec<f32> {
     pcm.as_chunks::<2>()
         .0

@@ -21,6 +21,7 @@ use crate::params::shared::{ApiErrorBody, ApiErrorDetail};
 ///
 /// 只给 `/v1/decisions` 用——Jev 标准（Ollama `/v1/systemone`）的错误体本身就是顶层
 /// `{"error": "..."}`，套一层 `{error:{message,...}}` 反而不标准。
+#[cfg_attr(not(feature = "laya"), allow(dead_code))]
 pub(crate) fn contract_error(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(serde_json::json!({ "error": message.into() }))).into_response()
 }

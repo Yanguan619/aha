@@ -224,6 +224,7 @@ impl Block {
     /// `k_cache` 是 `(1, heads, d, max_seq)`、`v_cache` 是 `(1, heads, max_seq, d)`；
     /// `pos_k` / `pos_v` 是对应形状的索引张量（值都是当前位），等价官方的
     /// `k_cache.index_copy_(2, input_pos, k)`。`mask` 是 `(1, 1, 1, max_seq)` 的加性掩码。
+    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
     fn forward_static(
         &self,
         x: &Tensor,
@@ -298,6 +299,7 @@ struct GraphCache {
 
 impl Text2Semantic {
     /// 图容量分桶。官方统一用 1024（短句被 padding 拖慢），这里按句长取最小桶。
+    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
     const BUCKETS: [usize; 4] = [256, 512, 1024, 1536];
 
     pub fn load(dir: impl AsRef<Path>, device: &Device, dtype: DType) -> Result<Self> {
@@ -531,6 +533,7 @@ impl Text2Semantic {
     }
 
     /// 挑出这一 token：屏蔽前 11 步的 EOS、采样、判停。两条路径共用同一套逻辑。
+    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
     fn pick_token(
         &self,
         logits: &Tensor,

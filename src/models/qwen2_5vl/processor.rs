@@ -34,7 +34,7 @@ pub struct GeneralInput {
     pub second_per_grid_ts: Option<Vec<f32>>,
 }
 
-#[allow(unused)]
+#[allow(dead_code)]
 pub struct Qwen2_5VLProcessor {
     vision_setting: VisionSetting,
     device: Device,

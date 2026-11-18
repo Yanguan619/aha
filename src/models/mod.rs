@@ -304,7 +304,7 @@ impl<'a> ModelInstance<'a> {
     }
 }
 
-#[allow(unused)]
+#[allow(dead_code)]
 pub fn load_gguf_model<'a>(
     model_type: WhichModel,
     config_path: Option<&str>, // 有些gguf未包含模型其他配置，需额外指定
@@ -314,6 +314,8 @@ pub fn load_gguf_model<'a>(
     n_ctx: u32,
     threads: i32,
 ) -> Result<ModelInstance<'a>> {
+    // 只有 gguf 相关分支才用这几个；默认特性下显式标记"故意不用"。
+    let _ = (config_path, n_ctx, threads);
     let model = match model_type {
         WhichModel::Qwen3_5Gguf => {
             let model = Qwen3_5GenerateModel::init_from_gguf(gguf_path, mmproj_path, device)?;
@@ -407,6 +409,8 @@ pub fn load_model<'a>(
     dtype: Option<DType>,
     threads: i32,
 ) -> Result<ModelInstance<'a>> {
+    // `threads` 只有 llama.cpp 分支用（`--features llama`）。
+    let _ = threads;
     warn_npu_provider_on_candle(model_type);
     let model = match model_type {
         WhichModel::AllMiniLML6V2 => {
@@ -522,7 +526,7 @@ pub fn load_model<'a>(
         WhichModel::Laya => {
             let model = crate::models::laya::LayaRouteModel::load(
                 std::path::Path::new(path),
-                crate::models::laya::route::MIN_CONFIDENCE,
+                crate::models::laya::MIN_CONFIDENCE,
                 15_000,
                 0,
             )?;

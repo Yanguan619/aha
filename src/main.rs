@@ -6,7 +6,7 @@ use crate::cli::{
 };
 
 mod cli;
-#[allow(unused)]
+#[allow(dead_code)]
 mod params;
 mod server;
 

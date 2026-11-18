@@ -34,7 +34,7 @@ pub struct GeneralInput {
     pub video_grid_thw: Option<Tensor>,
 }
 
-#[allow(unused)]
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VideoMetadata {
     total_num_frames: u32,
@@ -45,7 +45,7 @@ pub struct VideoMetadata {
     frame_indices: Vec<u32>,
 }
 
-#[allow(unused)]
+#[allow(dead_code)]
 pub struct Qwen3VLProcessor {
     img_process_cfg: PreprocessorConfig,
     video_process_cfg: PreprocessorConfig,
@@ -279,7 +279,7 @@ impl Qwen3VLProcessor {
         })
     }
 
-    #[allow(unused)]
+    #[allow(dead_code)]
     fn calculate_timestamps(
         &self,
         frames_indices: Vec<u32>,
@@ -306,7 +306,9 @@ impl Qwen3VLProcessor {
         Ok(stamps)
     }
 
-    #[allow(unused)]
+    #[allow(dead_code)]
+    // 视频分支要 `--features ffmpeg`；没编时这几个变量只声明不读。
+    #[cfg_attr(not(feature = "ffmpeg"), allow(unused_mut, unused_variables))]
     pub fn process_info(
         &self,
         messages: &ChatCompletionParameters,

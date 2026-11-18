@@ -266,7 +266,7 @@ impl ResidualVQ {
     }
 }
 
-#[allow(unused)]
+#[allow(dead_code)]
 pub struct RepCodec {
     downsample_scale: usize,
     down: Option<Conv1d>,

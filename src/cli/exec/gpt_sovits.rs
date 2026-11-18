@@ -24,10 +24,6 @@ pub fn run_with_device(
     run_inner(input, output, weight_path, device.as_ref())
 }
 
-pub fn run(input: &[String], output: Option<&str>, weight_path: &str) -> Result<()> {
-    run_inner(input, output, weight_path, None)
-}
-
 fn run_inner(
     input: &[String],
     output: Option<&str>,

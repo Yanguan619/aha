@@ -346,7 +346,7 @@ pub(crate) async fn run_serv(args: ServArgs) -> anyhow::Result<()> {
 
     init_inference_backend(&pet.device, pet.provider.as_deref())?;
 
-    let mut model_path;
+    let model_path;
     let weight_path = path_common.weight_path.clone();
     let (gguf, mmproj) = if model.is_gguf() {
         model_path = "GGUF".to_string();
@@ -706,6 +706,7 @@ pub(crate) fn run_qnn(args: QnnArgs) -> anyhow::Result<()> {
 /// starting the Laya bridge so a device mismatch shows up under the toggle.
 ///
 /// `--selftest` additionally loads the model and runs the routing corpus.
+#[cfg_attr(not(feature = "laya"), allow(unused_variables))]
 pub(crate) async fn run_probe(args: ProbeArgs) -> anyhow::Result<()> {
     let ProbeArgs {
         model,
@@ -720,7 +721,7 @@ pub(crate) async fn run_probe(args: ProbeArgs) -> anyhow::Result<()> {
             tracing::info!(dir = %path.display(), source, "Laya 模型目录就绪");
             let model = aha::models::laya::LayaRouteModel::load(
                 &path,
-                aha::models::laya::route::MIN_CONFIDENCE,
+                aha::models::laya::MIN_CONFIDENCE,
                 15_000,
                 0,
             )?;

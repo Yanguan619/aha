@@ -21,6 +21,11 @@
 
 pub mod route;
 
+/// 路由判定的默认置信度阈值（`route::MIN_CONFIDENCE` 的对外出口）。
+///
+/// cli / server 只该用这个名字，别再伸手进 `route` 子模块。
+pub use route::MIN_CONFIDENCE;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
