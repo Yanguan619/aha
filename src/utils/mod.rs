@@ -2,199 +2,46 @@ pub mod audio_utils;
 pub mod http;
 pub mod npu;
 
-/// 解析 `--device`：`auto`（None，由模型自己决定）/ `cpu` / `cuda` / `npu`。
-///
-/// `npu` 是给手机准备的**组合快捷键**：candle 侧没有 NPU 后端，所以这里仍然返回
-/// `None`（= CPU），真正的 NPU 加速由 ONNX Runtime 的 provider 完成——
-/// CLI 那边看到 `--device npu` 会把它翻成 `--provider qnn`（见
-/// [`crate::cli`] 的 `init_inference_backend`）。这样桌面端 `--device npu`
-/// 不会因为 candle 不认识 npu 直接报错，模型也能照常跑。
-pub fn resolve_device(spec: &str) -> anyhow::Result<Option<candle_core::Device>> {
-    match spec.trim().to_ascii_lowercase().as_str() {
-        "" | "auto" => Ok(None),
-        "cpu" => Ok(Some(candle_core::Device::Cpu)),
-        // NPU：candle 不接，回落 CPU；ORT 侧走 provider（由上层设置）。
-        "npu" | "npu-auto" => Ok(Some(candle_core::Device::Cpu)),
-        "cuda" | "gpu" => {
-            #[cfg(feature = "cuda")]
-            {
-                Ok(Some(candle_core::Device::new_cuda(0)?))
-            }
-            #[cfg(not(feature = "cuda"))]
-            {
-                anyhow::bail!("当前二进制没编译 cuda 支持，请用 --features cuda 重新构建")
-            }
-        }
-        other => anyhow::bail!("未知推理设备 {other:?}（可选 auto / cpu / cuda / npu）"),
-    }
-}
+pub mod device;
+pub mod format;
 pub mod img_utils;
 pub mod interpolate;
+pub mod path;
 pub mod response_utils;
 pub mod tensor_utils;
+pub mod text;
 pub mod video_utils;
 
+pub use device::{get_device, get_dtype, get_gpu_sm_arch, resolve_device};
+
+pub use path::{
+    find_type_files, get_default_save_dir, get_default_weight_path, get_file_path,
+    get_vb_extension, get_vb_model_path, is_model_downloaded,
+};
+
+pub use format::{bytes_to_human, dir_size, timestamp, timestamp_millis};
+
+pub use text::{
+    bucketize, capitalize_first_letter, ceil_by_factor, clean_asr_response, contains_cjk,
+    extract_mes, extract_metadata_value, extract_user_text, extract_user_text_vec, floor_by_factor,
+    map_language_code, prepare_tts_text, round_by_factor,
+};
+
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Cursor, Read};
-use std::time::{SystemTime, UNIX_EPOCH};
-use std::{collections::HashMap, fs, path::PathBuf, process::Command};
 
-use crate::models::common::model_mapping::WhichModel;
-use crate::params::chat::{
-    ChatCompletionParameters, ChatMessage, ChatMessageContent, ChatMessageContentPart,
-};
 use anyhow::{Result, anyhow};
 use byteorder::{LittleEndian, ReadBytesExt};
 use candle_core::{
     Context, DType, Device, Shape, Tensor,
-    pickle::{Object, Stack, TensorInfo, read_all_with_key},
+    pickle::{Object, Stack, TensorInfo},
 };
-use candle_nn::VarBuilder;
-use dirs::home_dir;
 use half::{bf16, f16, slice::HalfFloatSliceExt};
 use zip::ZipArchive;
 
-pub fn get_device(device: Option<&Device>) -> Device {
-    match device {
-        Some(d) => d.clone(),
-        None => {
-            #[cfg(feature = "cuda")]
-            {
-                Device::new_cuda(0).unwrap_or(Device::Cpu)
-            }
-            #[cfg(all(not(feature = "cuda"), feature = "metal"))]
-            {
-                Device::new_metal(0).unwrap_or(Device::Cpu)
-            }
-            #[cfg(all(not(feature = "cuda"), not(feature = "metal")))]
-            {
-                Device::Cpu
-            }
-        }
-    }
-}
-
-pub fn get_gpu_sm_arch() -> Result<f32> {
-    let output = Command::new("nvidia-smi")
-        .arg("--query-gpu=compute_cap")
-        .arg("--format=csv,noheader")
-        .output()
-        .map_err(|e| anyhow::anyhow!(format!("Failed to execute nvidia-smi: {}", e)))?;
-    if !output.status.success() {
-        return Err(anyhow::anyhow!(format!(
-            "nvidia-smi failed with status: {}\nError: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        )));
-    }
-    let output_str = String::from_utf8_lossy(&output.stdout);
-    let output_str = output_str.trim();
-    let sm_float = match output_str.parse::<f32>() {
-        Ok(num) => num,
-        Err(_) => {
-            return Err(anyhow::anyhow!(format!(
-                "gpr sm arch: {} parse float32 error",
-                output_str
-            )));
-        }
-    };
-    Ok(sm_float)
-}
-
-pub fn get_dtype(dtype: Option<DType>, cfg_dtype: &str) -> DType {
-    match dtype {
-        Some(d) => d,
-        None => {
-            #[cfg(feature = "cuda")]
-            {
-                match cfg_dtype {
-                    "float32" | "float" => DType::F32,
-                    "float64" | "double" => DType::F64,
-                    "float16" => DType::F16,
-                    "bfloat16" => {
-                        let arch = get_gpu_sm_arch();
-                        match arch {
-                            Err(_) => DType::F16,
-                            Ok(a) => {
-                                // nvidia显卡sm架构>=8.0的才支持BF16
-                                if a >= 8.0 { DType::BF16 } else { DType::F16 }
-                            }
-                        }
-                    }
-                    "uint8" => DType::U8,
-                    "int8" | "int16" | "int32" | "int64" => DType::I64,
-                    _ => DType::F32,
-                }
-            }
-            #[cfg(not(feature = "cuda"))]
-            {
-                match cfg_dtype {
-                    "float32" | "float" => DType::F32,
-                    "float64" | "double" => DType::F64,
-                    "float16" | "bfloat16" => DType::F16, // cpu上bfloat16有问题
-                    "uint8" => DType::U8,
-                    "int8" | "int16" | "int32" | "int64" => DType::I64,
-                    _ => DType::F32,
-                }
-            }
-        }
-    }
-}
-
 pub fn string_to_static_str(s: String) -> &'static str {
     Box::leak(s.into_boxed_str())
-}
-
-pub fn find_type_files(path: &str, extension_type: &str) -> Result<Vec<String>> {
-    let mut files = Vec::new();
-
-    for entry in std::fs::read_dir(path)? {
-        let entry = entry?;
-        let file_path = entry.path();
-
-        if file_path.is_file()
-            && let Some(extension) = file_path.extension()
-            && extension == extension_type
-        {
-            files.push(file_path.to_string_lossy().to_string());
-        }
-    }
-
-    Ok(files)
-}
-
-pub fn get_vb_model_path(
-    model_path: String,
-    dtype: DType,
-    device: Device,
-    key: Option<&'_ str>,
-) -> Result<VarBuilder<'_>> {
-    let mut dict_to_hashmap = HashMap::new();
-    let dict = read_all_with_key(&model_path, key)?;
-    for (k, v) in dict {
-        dict_to_hashmap.insert(k, v);
-    }
-    let vb = VarBuilder::from_tensors(dict_to_hashmap, dtype, &device);
-    Ok(vb)
-}
-
-pub fn get_vb_extension(
-    path: String,
-    extension_type: String,
-    dtype: DType,
-    device: Device,
-    key: Option<&'_ str>,
-) -> Result<VarBuilder<'_>> {
-    let model_list = find_type_files(&path, &extension_type)?;
-    let mut dict_to_hashmap = HashMap::new();
-    for m in model_list {
-        let dict = read_all_with_key(m, key)?;
-        for (k, v) in dict {
-            dict_to_hashmap.insert(k, v);
-        }
-    }
-    let vb = VarBuilder::from_tensors(dict_to_hashmap, dtype, &device);
-    Ok(vb)
 }
 
 pub fn crate_tensor_from_reader<R: std::io::Read>(
@@ -400,155 +247,6 @@ pub fn read_pth_tensor_info_cycle<P: AsRef<std::path::Path>>(
 }
 
 // 获取秒级时间戳
-pub fn timestamp() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-}
-
-// 获取毫秒级时间戳
-pub fn timestamp_millis() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis()
-}
-
-pub fn round_by_factor(num: u32, factor: u32) -> u32 {
-    let round = (num as f32 / factor as f32).round() as u32;
-    round * factor
-}
-
-pub fn floor_by_factor(num: f32, factor: u32) -> u32 {
-    let floor = (num / factor as f32).floor() as u32;
-    floor * factor
-}
-
-pub fn ceil_by_factor(num: f32, factor: u32) -> u32 {
-    let ceil = (num / factor as f32).ceil() as u32;
-    ceil * factor
-}
-
-pub fn extract_mes(mes: &ChatCompletionParameters) -> Result<Vec<(String, String)>> {
-    let mut mes_vec = Vec::new();
-    for chat_mes in mes.messages.clone() {
-        if let ChatMessage::User { content, .. } = chat_mes.clone()
-            && let ChatMessageContent::ContentPart(part_vec) = content
-        {
-            for part in part_vec {
-                if let ChatMessageContentPart::Text(text_part) = part {
-                    let text = text_part.text;
-                    mes_vec.push(("<|User|>".to_string(), text));
-                }
-            }
-        } else if let ChatMessage::Assistant { content, .. } = chat_mes.clone()
-            && let Some(cont) = content
-            && let ChatMessageContent::Text(c) = cont
-        {
-            mes_vec.push(("<|Assistant|>".to_string(), c));
-        }
-    }
-    Ok(mes_vec)
-}
-
-pub fn extract_metadata_value<T>(
-    metadata: &Option<std::collections::HashMap<String, String>>,
-    key: &str,
-) -> Option<T>
-where
-    T: std::str::FromStr + Clone + PartialEq,
-{
-    if let Some(map) = metadata
-        && let Some(value_str) = map.get(key)
-        && let Ok(value) = value_str.parse::<T>()
-    {
-        return Some(value);
-    }
-    None
-}
-
-pub fn extract_user_text(mes: &ChatCompletionParameters) -> Result<String> {
-    let mut ret = "".to_string();
-    for chat_mes in mes.messages.clone() {
-        if let ChatMessage::User { content, .. } = chat_mes.clone() {
-            match content {
-                ChatMessageContent::Text(text) => ret = ret + &text + "\n",
-                ChatMessageContent::ContentPart(part_vec) => {
-                    for part in part_vec {
-                        if let ChatMessageContentPart::Text(text_part) = part {
-                            let text = text_part.text;
-                            if text.chars().count() > 0 {
-                                ret = ret + &text + "\n"
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    ret = ret.trim().to_string();
-    Ok(ret)
-}
-
-pub fn extract_user_text_vec(mes: &ChatCompletionParameters) -> Result<Vec<String>> {
-    let mut ret = vec![];
-    for chat_mes in mes.messages.clone() {
-        if let ChatMessage::User { content, .. } = chat_mes.clone()
-            && let ChatMessageContent::ContentPart(part_vec) = content
-        {
-            for part in part_vec {
-                if let ChatMessageContentPart::Text(text_part) = part {
-                    let text = text_part.text;
-                    if text.chars().count() > 0 {
-                        ret.push(text);
-                    }
-                }
-            }
-        }
-    }
-    Ok(ret)
-}
-
-pub fn get_default_save_dir() -> Option<String> {
-    // 宿主进程（桌宠）用 AHA_HOME 指定：Android 上没有 HOME，~/.aha 不可写；
-    // 桌面上不设这个变量，仍然落在 ~/.aha。
-    let dir = match std::env::var_os("AHA_HOME").filter(|v| !v.is_empty()) {
-        Some(v) => PathBuf::from(v),
-        None => home_dir()?.join(".aha"),
-    };
-    if let Err(e) = fs::create_dir_all(&dir) {
-        eprintln!("Failed to create directory {:?}: {}", dir, e);
-    }
-    Some(dir.to_string_lossy().to_string())
-}
-
-pub fn get_file_path(file: &str) -> Result<PathBuf> {
-    let path = url::Url::parse(file)?;
-    let path = path.to_file_path();
-    let path = match path {
-        Ok(path) => path,
-        Err(_) => {
-            let mut path = file.to_owned();
-            path = path.split_off(7);
-            PathBuf::from(path)
-        }
-    };
-    Ok(path)
-}
-
-pub fn capitalize_first_letter(input: &str) -> String {
-    if input.is_empty() {
-        return input.to_string();
-    }
-
-    let mut chars = input.chars();
-    let first_char = chars.next().unwrap().to_uppercase().collect::<String>();
-    let remaining = chars.as_str().to_lowercase();
-    format!("{}{}", first_char, remaining)
-}
-
 pub fn load_tensor_from_pt(
     path: &str,
     zip_name: &str,
@@ -577,201 +275,6 @@ pub fn load_tensor_from_pt(
     }
     let t = Tensor::from_vec(data, shape, device)?;
     Ok(t)
-}
-
-/// Map OpenAI language code to full language name for ASR models
-///
-/// Supports 29 languages as per Qwen3ASR specification
-pub fn map_language_code(code: &str) -> Option<String> {
-    match code.to_lowercase().as_str() {
-        "zh" => Some("Chinese".to_string()),
-        "en" => Some("English".to_string()),
-        "yue" => Some("Cantonese".to_string()),
-        "ar" => Some("Arabic".to_string()),
-        "de" => Some("German".to_string()),
-        "fr" => Some("French".to_string()),
-        "es" => Some("Spanish".to_string()),
-        "pt" => Some("Portuguese".to_string()),
-        "id" => Some("Indonesian".to_string()),
-        "it" => Some("Italian".to_string()),
-        "ko" => Some("Korean".to_string()),
-        "ru" => Some("Russian".to_string()),
-        "th" => Some("Thai".to_string()),
-        "vi" => Some("Vietnamese".to_string()),
-        "ja" => Some("Japanese".to_string()),
-        "tr" => Some("Turkish".to_string()),
-        "hi" => Some("Hindi".to_string()),
-        "ms" => Some("Malay".to_string()),
-        "nl" => Some("Dutch".to_string()),
-        "sv" => Some("Swedish".to_string()),
-        "da" => Some("Danish".to_string()),
-        "fi" => Some("Finnish".to_string()),
-        "pl" => Some("Polish".to_string()),
-        "cs" => Some("Czech".to_string()),
-        "fil" => Some("Filipino".to_string()),
-        "fa" => Some("Persian".to_string()),
-        "el" => Some("Greek".to_string()),
-        "ro" => Some("Romanian".to_string()),
-        "hu" => Some("Hungarian".to_string()),
-        "mk" => Some("Macedonian".to_string()),
-        _ => None,
-    }
-}
-
-/// Clean ASR model output by extracting pure text from model-specific format
-///
-/// Qwen3ASR outputs format: "language English<asr_text>The morning sun..."
-/// This function extracts the text after "<asr_text>" marker.
-/// If no marker is found, returns the original text trimmed (for compatibility).
-pub fn clean_asr_response(raw: &str) -> String {
-    if let Some(start) = raw.find("<asr_text>") {
-        raw[start + "<asr_text>".len()..].trim().to_string()
-    } else {
-        raw.trim().to_string()
-    }
-}
-
-/// Get the default weight path for a given model
-/// Returns ~/.aha/{model_id} e.g., ~/.aha/OpenBMB/VoxCPM1.5
-pub fn get_default_weight_path(model: WhichModel) -> String {
-    let model_id = model.as_string();
-    let save_dir = get_default_save_dir().expect("Failed to get home directory");
-    format!("{}/{}", save_dir, model_id)
-}
-
-/// Check if a model is downloaded by verifying the model directory exists
-/// Returns true if ~/.aha/{model_id} directory exists, false otherwise
-pub fn is_model_downloaded(model: WhichModel) -> bool {
-    let model_id = model.as_string();
-    let save_dir = match get_default_save_dir() {
-        Some(dir) => dir,
-        None => return false,
-    };
-    let model_path = format!("{}/{}", save_dir, model_id);
-    std::path::Path::new(&model_path).exists()
-}
-
-/// Calculate total size of a directory recursively
-pub fn dir_size(path: &std::path::Path) -> anyhow::Result<u64> {
-    let mut total = 0;
-    if path.is_dir() {
-        for entry in std::fs::read_dir(path)? {
-            let entry = entry?;
-            let entry_path = entry.path();
-            if entry_path.is_dir() {
-                total += dir_size(&entry_path)?;
-            } else {
-                total += entry.metadata()?.len();
-            }
-        }
-    } else {
-        total = std::fs::metadata(path)?.len();
-    }
-    Ok(total)
-}
-
-/// Convert bytes to human readable format
-pub fn bytes_to_human(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
-    const TB: u64 = GB * 1024;
-
-    if bytes >= TB {
-        format!("{:.2} TB", bytes as f64 / TB as f64)
-    } else if bytes >= GB {
-        format!("{:.2} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.2} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.2} KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{} B", bytes)
-    }
-}
-
-pub fn bucketize(input: usize, boundaries: &[usize]) -> Result<usize> {
-    if boundaries.is_empty() {
-        return Err(anyhow!("bucketize param boundaries can not be empty"));
-    }
-    match boundaries.binary_search(&input) {
-        Ok(i) => Ok(i),
-        Err(i) => Ok(i),
-    }
-    // let mut index = 0;
-    // let mut change = false;
-    // for i in 0..boundaries.len() {
-    //     if input <= boundaries[i] {
-    //         index = i;
-    //         change = true;
-    //         break;
-    //     }
-    // }
-    // if !change {
-    //     index = boundaries.len();
-    // }
-    // Ok(index)
-}
-
-pub fn contains_cjk(text: &str) -> bool {
-    for ch in text.chars() {
-        let c = ch as u32;
-        if (0x4e00..=0x9fff).contains(&c) // CJK Unified Ideographs
-            || (0x3400..=0x4dbf).contains(&c) // CJK Unified Ideographs Extension A
-            || (0x3040..=0x30ff).contains(&c) // Hiragana and Katakana
-            || (0xac00..=0xd7af).contains(&c)
-        // Hangul Syllables
-        {
-            return true;
-        }
-    }
-    false
-}
-
-pub fn prepare_tts_text(text: &str) -> Result<String> {
-    let mut normalized_text = text.trim().to_string();
-    if normalized_text.is_empty() {
-        return Err(anyhow!("Text cannot be empty."));
-    }
-    normalized_text = normalized_text.replace(['\n', '\r'], " ");
-    while normalized_text.contains("  ") {
-        normalized_text = normalized_text.replace("  ", " ");
-    }
-
-    if contains_cjk(&normalized_text) {
-        let cjk_end_punctuations = ['。', '！', '？', '…', '.', '!', '?'];
-        if !normalized_text.ends_with(|c: char| cjk_end_punctuations.contains(&c)) {
-            normalized_text.push('。');
-        }
-        return Ok(normalized_text);
-    }
-
-    // Non-CJK (English/Western) logic
-    // Capitalize first letter if it's lowercase alphabetic
-    if let Some(first_char) = normalized_text.chars().next()
-        && first_char.is_ascii_lowercase()
-    {
-        let mut chars = normalized_text.chars();
-        chars.next(); // consume first char
-        let rest: String = chars.collect();
-        normalized_text = format!("{}{}", first_char.to_ascii_uppercase(), rest);
-    }
-
-    // Add period if ends with alphanumeric
-    if let Some(last_char) = normalized_text.chars().last()
-        && last_char.is_alphanumeric()
-    {
-        normalized_text.push('.');
-    }
-
-    // Add padding if less than 5 words
-    // Split by whitespace to count words
-    let word_count = normalized_text.split_whitespace().count();
-    if word_count < 5 {
-        normalized_text = format!("        {}", normalized_text); // 8 spaces
-    }
-
-    Ok(normalized_text)
 }
 
 #[cfg(test)]
