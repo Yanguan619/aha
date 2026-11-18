@@ -15,9 +15,9 @@ use crate::{
 };
 use aha::exec::*;
 use aha::{
-    models::common::model_mapping::WhichModel,
+    models::{common::model_mapping::WhichModel, download::download_model},
     utils::{
-        bytes_to_human, dir_size, download_model, get_default_save_dir, get_default_weight_path,
+        bytes_to_human, dir_size, get_default_save_dir, get_default_weight_path,
         is_model_downloaded,
     },
 };

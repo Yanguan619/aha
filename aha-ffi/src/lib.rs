@@ -921,7 +921,7 @@ pub unsafe extern "C" fn aha_model_download(
         DOWNLOAD_FILES_DONE.store(0, Ordering::SeqCst);
         DOWNLOAD_FILES_TOTAL.store(0, Ordering::SeqCst);
 
-        let progress = |p: &aha::utils::DownloadProgress<'_>| {
+        let progress = |p: &aha::models::download::DownloadProgress<'_>| {
             DOWNLOAD_DONE.store(p.done, Ordering::Relaxed);
             DOWNLOAD_TOTAL.store(p.total, Ordering::Relaxed);
             DOWNLOAD_FILES_DONE.store(p.files_done as u64, Ordering::Relaxed);
@@ -932,7 +932,7 @@ pub unsafe extern "C" fn aha_model_download(
             }
         };
         let cancel = || DOWNLOAD_CANCELLED.load(Ordering::SeqCst);
-        let ctl = aha::utils::DownloadCtl {
+        let ctl = aha::models::download::DownloadCtl {
             progress: Some(&progress),
             cancel: Some(&cancel),
         };

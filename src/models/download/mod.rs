@@ -4,17 +4,23 @@
 //! `WhichModel` 枚举绑得太死。这里抽出一个只吃字符串的版本：宿主（Android 的 JNI 壳、
 //! 桌宠主进程）不需要知道 `WhichModel` 有哪些变体，只要传模型 id。
 //!
-//! 仓库 id 和文件清单来自 [`crate::models::mirrors`]，下载本身复用
-//! [`crate::utils::download_files_to_with_ctl`]（进度回调 + 取消都走 `DownloadCtl`）。
+//! 仓库 id 和文件清单来自 [`crate::models::mirrors`]；HTTP / 续传 / 重试那套机制在
+//! [`http`]（进度回调 + 取消都走 [`DownloadCtl`]）。**模型模块只准调 `ensure_*`**——
+//! 要自己拼 [`DownloadFilter`] 说明该能力还没抽到这里。
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow, bail};
 
 use crate::models::mirrors::{self, Mirror};
-use crate::utils::{
-    DownloadCtl, DownloadFilter, DownloadSummary, download_files_to_with_ctl, get_default_save_dir,
+pub mod http;
+
+pub use http::{
+    DownloadCtl, DownloadFilter, DownloadProgress, DownloadSummary, download_files_to,
+    download_files_to_with_ctl, download_model,
 };
+
+use crate::utils::get_default_save_dir;
 
 /// 已就位的 GGUF 权重：`model` 一定存在，`mmproj` 是可选的投影文件（纯文本模型为 `None`）。
 pub struct GgufWeights {
@@ -197,7 +203,7 @@ pub async fn download_into(
         },
         None => DownloadFilter::ALL,
     };
-    download_files_to_with_ctl(repo, dir, max_retries, filter, ctl).await
+    http::download_files_to_with_ctl(repo, dir, max_retries, filter, ctl).await
 }
 
 /// 权重落盘目录：`<save_dir>/<model_id>`；`save_dir` 省略时用 `~/.aha` / `$AHA_HOME`。
