@@ -630,6 +630,11 @@ impl<'a> ProgressTracker<'a> {
         self.files_done += 1;
     }
 
+    /// 断点续传：把上次已经落盘的字节补进总进度（不动 `files_done`，那个文件还没下完）。
+    fn resume(&mut self, bytes: u64) {
+        self.done += bytes;
+    }
+
     /// 当前文件又收到 `n` 字节。
     fn advance(&mut self, path: &str, n: u64, file_done: u64, file_total: u64) {
         self.done += n;
@@ -663,7 +668,8 @@ impl<'a> ProgressTracker<'a> {
 /// 把 `repo_id` 指定的 ModelScope 仓库文件下到 `dir`，失败按 `max_retries` 重试。
 ///
 /// 已存在且大小一致的文件跳过；剩下的从
-/// `{MS_RESOLVE}/{repo_id}/resolve/master/{path}` 流式写盘。
+/// `{MS_RESOLVE}/{repo_id}/resolve/master/{path}` 流式写盘。**单文件支持断点续传**：
+/// `<file>.part` 存在就按它的长度发 `Range`，服务端不认（200）或对不上（416）时退回整份重下。
 pub async fn download_files_to(
     repo_id: &str,
     dir: &Path,
@@ -825,6 +831,21 @@ async fn download_repo(
     Ok(summary)
 }
 
+/// 一个带可选 `Range` 的 GET。`start == 0` 表示整份下载。
+///
+/// 单独抽出来是因为 416 的兜底要再发一次不带 `Range` 的请求，两处必须用同一套 header。
+async fn get_with_range(
+    client: &reqwest::Client,
+    url: &str,
+    start: u64,
+) -> Result<reqwest::Response> {
+    let mut request = client.get(url).header("User-Agent", MS_UA);
+    if start > 0 {
+        request = request.header("Range", format!("bytes={start}-"));
+    }
+    Ok(request.send().await?)
+}
+
 async fn download_file(
     client: &reqwest::Client,
     repo_id: &str,
@@ -832,25 +853,59 @@ async fn download_file(
     dst: &Path,
     tracker: &mut ProgressTracker<'_>,
 ) -> Result<()> {
-    // shortcut: 单个文件不支持断点续传（整个文件重下）；已完成的文件按大小跳过，
-    // 只在网络很差的大 shard 上才会浪费带宽。
-    let url = format!("{MS_RESOLVE}/{repo_id}/resolve/master/{}", file.path);
-    let resp = client.get(&url).header("User-Agent", MS_UA).send().await?;
-    if !resp.status().is_success() {
-        anyhow::bail!("Failed to download {}: HTTP {}", file.path, resp.status());
-    }
-
-    // 先写 `<file>.part`，校验大小后再改名：进程中途被杀也不会留下"看起来完整"的半截文件
-    // （`ensure_downloaded` 这类调用只按文件是否存在判断，半截文件会被当成已下完）。
+    // 断点续传：`<file>.part` 就是上一次写了一半的文件，按它的大小发 `Range` 接着写。
+    // 服务端不认 `Range`（回 200）或 `.part` 与远端对不上（回 416）时退回整份重下。
     let part = dst.with_file_name(format!(
         "{}.part",
         dst.file_name().unwrap_or_default().to_string_lossy()
     ));
-    let mut out = File::create(&part)?;
+    let mut have = fs::metadata(&part).map(|meta| meta.len()).unwrap_or(0);
+    // 残留的 `.part` 比声明大小还大 = 上游换过版本，接着写只会得到坏文件，扔掉重来。
+    if have > file.size {
+        println!(
+            "  {} 的残留 .part（{have} B）超过声明大小（{} B），丢弃重下",
+            file.path, file.size
+        );
+        let _ = fs::remove_file(&part);
+        have = 0;
+    }
+
+    let url = format!("{MS_RESOLVE}/{repo_id}/resolve/master/{}", file.path);
+    let mut resp = get_with_range(client, &url, have).await?;
+    if have > 0 && resp.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+        println!(
+            "  {} 的 .part 无法续传（HTTP 416），丢弃后整份重下",
+            file.path
+        );
+        let _ = fs::remove_file(&part);
+        have = 0;
+        resp = get_with_range(client, &url, 0).await?;
+    }
+    if !resp.status().is_success() {
+        anyhow::bail!("Failed to download {}: HTTP {}", file.path, resp.status());
+    }
+    let append = have > 0 && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+    if have > 0 && !append {
+        println!(
+            "  {} 的服务器忽略了 Range（HTTP {}），从头下载",
+            file.path,
+            resp.status()
+        );
+    }
+
+    // 先写 `<file>.part`，校验大小后再改名：进程中途被杀也不会留下"看起来完整"的半截文件
+    // （`ensure_downloaded` 这类调用只按文件是否存在判断，半截文件会被当成已下完）。
+    let mut out = if append {
+        // 续上的那部分也算进度，否则进度条会从 0 开始骗人。
+        tracker.resume(have);
+        std::fs::OpenOptions::new().append(true).open(&part)?
+    } else {
+        File::create(&part)?
+    };
+    let mut written = if append { have } else { 0u64 };
     let mut stream = resp.bytes_stream();
-    let mut written = 0u64;
     while let Some(chunk) = stream.next().await {
-        // 取消/退出时立即中断，`.part` 留着，下次从零重下这个文件
+        // 取消/退出时立即中断，`.part` 留着，下次从这个位置继续
         tracker.check_cancel()?;
         let chunk = chunk?;
         written += chunk.len() as u64;
