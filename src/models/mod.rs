@@ -43,7 +43,6 @@ pub mod sense_voice;
 #[cfg(feature = "vla")]
 pub mod turbovla;
 pub mod voxcpm;
-pub mod voxcpm_refact;
 pub mod w2v_bert_2_0;
 // pub mod sam3;
 pub mod fire_red_vad;

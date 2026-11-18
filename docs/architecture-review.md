@@ -106,7 +106,7 @@ CJK 判断、语言码映射、ASR 响应清洗、目录大小、字节格式化
 
 | # | 问题 | 状态 |
 |---|---|---|
-| 1 | `models/voxcpm_refact/` 半成品重构（`generate code refactoring progress 1/3`），只被 `models/mod.rs` 声明、从未接线，且反向依赖 `voxcpm` 内部件 | 待你决定删还是 feature 门控 |
+| 1 | `models/voxcpm_refact/` 半成品重构（`generate code refactoring progress 1/3`） | ✅ **已收尾**：把老实现里它复用的零件（`audio_vae` / `config` / `minicpm4` / `tokenizer` / 主干算子层）搬进 refact，删掉老 `generate.rs`，再把 `voxcpm_refact` 提正为 `models/voxcpm`（类型去掉 `Refact` 后缀）。两套 `GenerateModel` 分支逐行等价，所以是等价替换 |
 | 2 | 巨文件 `server/realtime.rs` 1883 行（非空行） | ✅ 1985 → **1597**，拆出 `protocol.rs`(151) / `audio.rs`(206) / `sentences.rs`(74)；编排（`run` / `Conn` / `run_response` / `tts_worker`）留在 `mod.rs` |
 | 3 | `cli` 7 处 + `server` 3 处直接 import `models::laya::*` | ✅ `laya::route::MIN_CONFIDENCE` 收成 `laya::MIN_CONFIDENCE`（其余 10 处本来就是走模块面，方向正确） |
 | 4 | "全部模型"清单多处维护 | 待做（`aha models --json` + CI 校验文档） |

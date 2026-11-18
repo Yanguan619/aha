@@ -1,13 +1,9 @@
-use std::collections::HashMap;
-
-use crate::params::chat::{
-    ChatCompletionChunkResponse, ChatCompletionParameters, ChatCompletionResponse,
-};
 use anyhow::{Result, anyhow};
 use base64::{Engine, prelude::BASE64_STANDARD};
 use candle_core::{DType, Device, Tensor, pickle::read_all_with_key};
 use candle_nn::VarBuilder;
 use futures_util::{Stream, stream};
+use std::collections::HashMap;
 
 use crate::{
     models::{
@@ -15,10 +11,11 @@ use crate::{
         voxcpm::{
             audio_vae::AudioVAE,
             config::{AudioVaeConfig, VoxCPMConfig},
-            model::VoxCPMModel,
             tokenizer::SingleChineseTokenizer,
         },
+        voxcpm::{model::VoxCPMModel, processor::VoxCPMProcessor},
     },
+    params::chat::{ChatCompletionChunkResponse, ChatCompletionParameters, ChatCompletionResponse},
     utils::{
         audio_utils::{extract_audio_url, get_audio_wav_u8},
         extract_metadata_value, extract_user_text, find_type_files, get_device, get_dtype,
@@ -28,6 +25,9 @@ use crate::{
 
 pub struct VoxCPMGenerate {
     model: VoxCPMModel,
+    tokenizer: SingleChineseTokenizer,
+    audio_vae: AudioVAE,
+    processor: VoxCPMProcessor,
     prompt_cache: Option<HashMap<String, Tensor>>,
     out_sample_rate: usize,
     model_name: String,
@@ -83,6 +83,13 @@ impl VoxCPMGenerate {
             // Some(128),
             // Some(false),
         )?;
+        let decode_chunk_size = audio_config.decoder_rates.iter().product();
+        let processor = VoxCPMProcessor::new(
+            audio_vae.sample_rate,
+            audio_vae.chunk_size,
+            config.patch_size,
+            device.clone(),
+        );
 
         let cfg_dtype = config.dtype.as_str();
         let m_dtype = get_dtype(dtype, cfg_dtype);
@@ -106,33 +113,30 @@ impl VoxCPMGenerate {
             VarBuilder::from_tensors(dict_to_hashmap, m_dtype, device)
         };
         let tokenizer = SingleChineseTokenizer::new(path)?;
-        let model = VoxCPMModel::new(vb_voxcpm, config, tokenizer, audio_vae)?;
+        let model = VoxCPMModel::new(vb_voxcpm, config, audio_vae.latent_dim, decode_chunk_size)?;
         let out_sample_rate = audio_config
             .out_sample_rate
             .unwrap_or(audio_config.sample_rate);
         Ok(Self {
             model,
+            tokenizer,
+            audio_vae,
+            processor,
             prompt_cache: None,
             out_sample_rate,
             model_name,
         })
     }
 
-    pub fn build_prompt_cache(
-        &mut self,
-        prompt_text: String,
-        prompt_wav_path: String,
-    ) -> Result<()> {
-        let cache = self
-            .model
-            .build_prompt_cache(prompt_text, prompt_wav_path)?;
-        self.prompt_cache = Some(cache);
-        Ok(())
+    pub fn sample_rate(&self) -> usize {
+        self.out_sample_rate
     }
 
-    pub fn generate_use_prompt_cache(
+    pub fn inference(
         &mut self,
         target_text: String,
+        prompt_text: Option<String>,
+        prompt_wav_path: Option<String>,
         min_len: usize,
         max_len: usize,
         inference_timesteps: usize,
@@ -140,22 +144,33 @@ impl VoxCPMGenerate {
         retry_badcase: bool,
         retry_badcase_ratio_threshold: f64,
     ) -> Result<Tensor> {
-        let audio = match &self.prompt_cache {
-            Some(cache) => {
-                let prompt_cache = cache.clone();
-                self.model.generate_with_prompt_cache(
-                    target_text,
-                    prompt_cache,
-                    min_len,
-                    max_len,
-                    inference_timesteps,
-                    cfg_value,
-                    retry_badcase,
-                    retry_badcase_ratio_threshold,
-                )?
-            }
-            None => self.generate_simple(target_text)?,
+        let (text_token, audio_feat, audio_mask) = self.processor.processor(
+            target_text,
+            prompt_text,
+            prompt_wav_path,
+            &self.tokenizer,
+            &self.audio_vae,
+        )?;
+        let target_text_length = if let Some(mask) = &audio_mask {
+            text_token.dim(1)? - (mask.sum_all()?.to_scalar::<u32>()? as usize)
+        } else {
+            text_token.dim(1)?
         };
+        let max_len = if retry_badcase {
+            (target_text_length as f64 * retry_badcase_ratio_threshold + 10.0) as usize
+        } else {
+            max_len
+        };
+        let audio = self.model.inference(
+            &text_token,
+            audio_feat.as_ref(),
+            audio_mask.as_ref(),
+            min_len,
+            max_len,
+            inference_timesteps,
+            cfg_value,
+            &self.audio_vae,
+        )?;
         self.model.clear_kv_cache();
         Ok(audio)
     }
@@ -174,45 +189,113 @@ impl VoxCPMGenerate {
             1000,
             10,
             2.0,
-            // false,
+            false,
             6.0,
         )?;
         Ok(audio)
     }
     pub fn generate_simple(&mut self, target_text: String) -> Result<Tensor> {
-        // let audio = self.generate(target_text, None, None, 2, 100, 10, 2.0, false, 6.0)?;
-        let audio = self.inference(target_text, None, None, 2, 100, 10, 2.0, 6.0)?;
+        let audio = self.inference(target_text, None, None, 2, 100, 10, 2.0, false, 6.0)?;
         Ok(audio)
     }
-    pub fn inference(
+
+    pub fn build_prompt_cache(
+        &mut self,
+        prompt_text: String,
+        prompt_wav_path: String,
+    ) -> Result<()> {
+        let prompt_cache = self.processor.build_prompt_cache(
+            prompt_text,
+            prompt_wav_path,
+            &self.tokenizer,
+            &self.audio_vae,
+        )?;
+        self.prompt_cache = Some(prompt_cache);
+        Ok(())
+    }
+
+    pub fn generate_use_prompt_cache(
         &mut self,
         target_text: String,
-        prompt_text: Option<String>,
-        prompt_wav_path: Option<String>,
         min_len: usize,
         max_len: usize,
         inference_timesteps: usize,
         cfg_value: f64,
-        // retry_badcase: bool,
+        retry_badcase: bool,
         retry_badcase_ratio_threshold: f64,
     ) -> Result<Tensor> {
-        let audio = self.model.generate(
-            target_text,
-            prompt_text,
-            prompt_wav_path,
-            min_len,
-            max_len,
-            inference_timesteps,
-            cfg_value,
-            // retry_badcase,
-            retry_badcase_ratio_threshold,
-        )?;
+        let audio = match &self.prompt_cache {
+            Some(cache) => {
+                let (text_token, audio_feat, audio_mask) =
+                    self.processor
+                        .processor_use_cache(target_text, cache, &self.tokenizer)?;
+                let target_text_length = if let Some(mask) = &audio_mask {
+                    text_token.dim(1)? - (mask.sum_all()?.to_scalar::<u32>()? as usize)
+                } else {
+                    text_token.dim(1)?
+                };
+                let max_len = if retry_badcase {
+                    (target_text_length as f64 * retry_badcase_ratio_threshold + 10.0) as usize
+                } else {
+                    max_len
+                };
+                self.model.inference(
+                    &text_token,
+                    audio_feat.as_ref(),
+                    audio_mask.as_ref(),
+                    min_len,
+                    max_len,
+                    inference_timesteps,
+                    cfg_value,
+                    &self.audio_vae,
+                )?
+            }
+            None => {
+                return Err(anyhow!("need prompt_cache"));
+            }
+        };
         self.model.clear_kv_cache();
         Ok(audio)
     }
 
-    pub fn sample_rate(&self) -> usize {
-        self.out_sample_rate
+    pub fn generate_stream_use_prompt_cache(
+        &mut self,
+        target_text: String,
+        min_len: usize,
+        max_len: usize,
+        inference_timesteps: usize,
+        cfg_value: f64,
+        retry_badcase: bool,
+        retry_badcase_ratio_threshold: f64,
+    ) -> Result<impl Stream<Item = Result<Tensor, anyhow::Error>>> {
+        match &self.prompt_cache {
+            Some(cache) => {
+                let (text_token, audio_feat, audio_mask) =
+                    self.processor
+                        .processor_use_cache(target_text, cache, &self.tokenizer)?;
+                let target_text_length = if let Some(mask) = &audio_mask {
+                    text_token.dim(1)? - (mask.sum_all()?.to_scalar::<u32>()? as usize)
+                } else {
+                    text_token.dim(1)?
+                };
+                let max_len = if retry_badcase {
+                    (target_text_length as f64 * retry_badcase_ratio_threshold + 10.0) as usize
+                } else {
+                    max_len
+                };
+                self.model.inference_stream(
+                    text_token,
+                    audio_feat,
+                    audio_mask,
+                    min_len,
+                    max_len,
+                    inference_timesteps,
+                    cfg_value,
+                    &self.audio_vae,
+                )
+            }
+            None => Err(anyhow!("need prompt_cache")),
+        }
     }
 }
 
@@ -244,14 +327,11 @@ impl GenerateModel for VoxCPMGenerate {
         let mut target_text = extract_user_text(&mes)?;
         if let Some(instruction) = control_instruction
             && self.model_name.contains("2")
-        // && prompt_text.is_none()
-        // && prompt_wav_path.is_none()
         {
             target_text = format!("({instruction}){target_text}");
         }
         let audio = self
-            .model
-            .generate(
+            .inference(
                 target_text,
                 prompt_text,
                 prompt_wav_path,
@@ -259,6 +339,7 @@ impl GenerateModel for VoxCPMGenerate {
                 max_len,
                 inference_timesteps,
                 cfg_value,
+                true,
                 retry_badcase_ratio_threshold,
             )
             .inspect_err(|_| {

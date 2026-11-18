@@ -33,6 +33,8 @@ pub fn run(input: &[String], output: Option<&str>, weight_path: &str) -> Result<
         100, // max_len (voxcpm uses 100 vs OpenBMB/VoxCPM1.5's 4096)
         10,
         2.0,
+        // retry_badcase：目标时长不够时按比例放宽 max_len（与 GenerateModel 的默认一致）
+        true,
         6.0,
     )?;
     let i_duration = i_start.elapsed();
