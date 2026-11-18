@@ -102,15 +102,15 @@ CJK 判断、语言码映射、ASR 响应清洗、目录大小、字节格式化
 属于过度抽象——为了消除两处 `if` 而引入一张能力和加载器都要读的表，收益是负的。判断标准：
 **能从现有谓词直接答的问题，就别新建一层。**
 
-### P2 其余
+### P2 其余（部分已做）
 
-| # | 问题 | 处理 |
+| # | 问题 | 状态 |
 |---|---|---|
-| 1 | `models/voxcpm_refact/` 死代码，且反向依赖 `models::voxcpm` 内部件 | 删或 feature 门控 |
-| 2 | 巨文件：`server/realtime.rs` 1883、`utils/audio_utils.rs` 1666、`qwen3_5/model.rs` 1451、`deepseek_ocr/model.rs` 1399、`common/modules.rs` 1331 | 优先拆 realtime（协议 / 会话 / TTS worker） |
-| 3 | `cli` 7 处 + `server` 3 处直接 import `models::laya::*` | 收成 `LayaFacade` |
-| 4 | "全部模型"清单多处维护（mirrors / model_list / 两份文档 / cli 分支） | 加 `aha models --json` + CI 校验文档 |
-| 5 | 34 处 `allow(unused)`、11 处 `dead_code` | 收窄到具体 item 并清理 |
+| 1 | `models/voxcpm_refact/` 半成品重构（`generate code refactoring progress 1/3`），只被 `models/mod.rs` 声明、从未接线，且反向依赖 `voxcpm` 内部件 | 待你决定删还是 feature 门控 |
+| 2 | 巨文件 `server/realtime.rs` 1883 行（非空行） | ✅ 1985 → **1597**，拆出 `protocol.rs`(151) / `audio.rs`(206) / `sentences.rs`(74)；编排（`run` / `Conn` / `run_response` / `tts_worker`）留在 `mod.rs` |
+| 3 | `cli` 7 处 + `server` 3 处直接 import `models::laya::*` | ✅ `laya::route::MIN_CONFIDENCE` 收成 `laya::MIN_CONFIDENCE`（其余 10 处本来就是走模块面，方向正确） |
+| 4 | "全部模型"清单多处维护 | 待做（`aha models --json` + CI 校验文档） |
+| 5 | `allow(unused)` 34 处 | ✅ 27 处收窄为 `allow(dead_code)` / `cfg_attr(not(feature=...))`；顺带清掉被压住的真死代码（`exec::gpt_sovits::run`）。默认 / sherpa / gpt-sovits / qnn / cuda 五种配置 **warning = 0**（`--features llama` 的 592 条来自 `llama_bindings.rs` 的 FFI 声明） |
 
 ## 做得好的地方（重构时别改坏）
 

@@ -56,32 +56,30 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
+mod audio;
+mod protocol;
+mod sentences;
+
+use audio::{
+    ASR_RATE, AUDIO_CHUNK_MS, AudioBuffer, DEFAULT_INPUT_RATE, DEFAULT_OUTPUT_RATE, EnergyVad,
+    VadEvent, pcm16_to_f32, resample_pcm16,
+};
+use protocol::{build_request, envelope, item_to_json, new_id, normalize_content, response_shell};
+use sentences::{
+    FIRST_SENTENCE_MIN_CHARS, HARD_MIN_CHARS, SOFT_MIN_CHARS, drain_sentences, drain_sentences_with,
+};
+
 use crate::server::api::model_for;
 use aha::models::GenerateModel;
-use aha::params::chat::{
-    ChatCompletionParameters, ChatMessageContent, ChatMessageContentPart, DeltaChatMessage,
-};
+use aha::params::chat::{ChatMessageContent, ChatMessageContentPart, DeltaChatMessage};
 
 /// WebSocket 出站消息队列的类型别名。
 type Sender = mpsc::UnboundedSender<Message>;
 
-/// 送进 ASR 的采样率（SenseVoice / glm-asr 都吃 16k）。
-const ASR_RATE: u32 = 16_000;
-/// 客户端不声明时按 24k 收（OpenAI Realtime 的默认值）。
-const DEFAULT_INPUT_RATE: u32 = 24_000;
-/// 发给客户端的默认采样率。
-const DEFAULT_OUTPUT_RATE: u32 = 24_000;
-/// 输入缓冲区上限：60 秒，超过就从最老的开始丢（和 `/v1/audio/transcriptions` 的上限对齐）。
-const MAX_BUFFER_SECS: u32 = 60;
 /// 对话里最多保留多少条 item（超了丢最老的，避免上下文无限膨胀）。
 const MAX_ITEMS: usize = 40;
 /// 默认音色（Kokoro 的 `zf_001`；GPT-SoVITS 没有这个名字时用模型自己的默认音色）。
 const DEFAULT_VOICE: &str = "zf_001";
-/// 能量 VAD 的帧长（毫秒）。
-const VAD_FRAME_MS: u32 = 20;
-/// `response.audio.delta` 的单块时长（毫秒）——太大首包慢、太小 WS 帧太碎。
-const AUDIO_CHUNK_MS: u32 = 200;
-
 /// `GET /realtime` 的查询参数。等价于连上之后先发一条 `session.update`。
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct RealtimeQuery {
@@ -626,7 +624,7 @@ impl Conn {
 
     /// 缓冲区 → ASR → 一条 user item。`then_respond` 为真时顺手触发一轮生成。
     async fn commit_audio(&mut self, then_respond: bool) {
-        if self.audio.pcm.is_empty() {
+        if self.audio.is_empty() {
             self.send_error(
                 "input_audio_buffer_commit_empty",
                 "invalid_request_error",
@@ -1300,145 +1298,6 @@ async fn tts_worker(
     }
 }
 
-/// 一帧事件的外壳：`event_id` + `type` + 载荷。
-fn envelope(kind: &str, body: Value) -> Value {
-    let mut map = match body {
-        Value::Object(map) => map,
-        _ => serde_json::Map::new(),
-    };
-    map.insert("event_id".to_owned(), json!(new_id("event")));
-    map.insert("type".to_owned(), json!(kind));
-    Value::Object(map)
-}
-
-/// 新 id，形状和 OpenAI 一样：`<prefix>_<32 位 hex>`。
-fn new_id(prefix: &str) -> String {
-    format!("{prefix}_{}", uuid::Uuid::new_v4().simple())
-}
-
-fn response_shell(response_id: &str, cfg: &SessionConfig, status: &str) -> Value {
-    json!({
-        "id": response_id,
-        "object": "realtime.response",
-        "status": status,
-        "status_details": Value::Null,
-        "output": [],
-        "usage": Value::Null,
-        "conversation_id": Value::Null,
-        "modalities": cfg.modalities,
-        "voice": cfg.voice,
-        "output_audio_format": "pcm16",
-        "temperature": cfg.temperature,
-        "max_output_tokens": cfg.max_output_tokens.map(|n| json!(n)).unwrap_or_else(|| json!("inf")),
-    })
-}
-
-fn item_to_json(item: &Item) -> Value {
-    json!({
-        "id": item.id,
-        "object": "realtime.item",
-        "type": "message",
-        "status": "completed",
-        "role": item.role,
-        "content": item.content,
-    })
-}
-
-/// 把 `conversation.item.create` 里的 content 归一化成 chat 形状的 content。
-///
-/// 认这几种：纯字符串、`input_text`/`text`、`input_image`/`image_url`
-/// （视频就是按帧塞 `input_image`）。返回 `None` 表示一个字都没解析出来。
-fn normalize_content(content: &Value) -> Option<Value> {
-    if let Some(text) = content.as_str() {
-        let text = text.trim();
-        return (!text.is_empty()).then(|| Value::String(text.to_owned()));
-    }
-    let parts = content.as_array()?;
-    let mut normalized = Vec::new();
-    let mut has_media = false;
-    for part in parts {
-        let kind = part.get("type").and_then(Value::as_str).unwrap_or_default();
-        match kind {
-            "input_text" | "text" | "output_text" => {
-                if let Some(text) = part.get("text").and_then(Value::as_str) {
-                    normalized.push(json!({ "type": "text", "text": text }));
-                }
-            }
-            "input_image" | "image_url" => {
-                // OpenAI Realtime 是 `image_url: "data:..."`；chat 形状是 `{url, detail}`。
-                let url = part
-                    .get("image_url")
-                    .and_then(|image| {
-                        image.as_str().map(ToOwned::to_owned).or_else(|| {
-                            image
-                                .get("url")
-                                .and_then(Value::as_str)
-                                .map(ToOwned::to_owned)
-                        })
-                    })
-                    .or_else(|| {
-                        part.get("url")
-                            .and_then(Value::as_str)
-                            .map(ToOwned::to_owned)
-                    })?;
-                let detail = part
-                    .get("image_url")
-                    .and_then(|image| image.get("detail"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("auto");
-                normalized.push(json!({
-                    "type": "image_url",
-                    "image_url": { "url": url, "detail": detail },
-                }));
-                has_media = true;
-            }
-            _ => {}
-        }
-    }
-    if normalized.is_empty() {
-        return None;
-    }
-    // 没有多模态内容时退化成纯字符串，兼容只吃字符串 content 的模型。
-    if has_media {
-        Some(Value::Array(normalized))
-    } else {
-        let text = normalized
-            .iter()
-            .filter_map(|part| part.get("text").and_then(Value::as_str))
-            .collect::<Vec<_>>()
-            .join("\n");
-        Some(Value::String(text))
-    }
-}
-
-/// 会话 + 指令 → chat 请求体（走 `serde_json` 填字段，省得手工构造 30 多个 Option）。
-fn build_request(cfg: &SessionConfig, items: &[Item]) -> Result<ChatCompletionParameters, String> {
-    let mut messages: Vec<Value> = Vec::new();
-    if !cfg.instructions.trim().is_empty() {
-        messages.push(json!({ "role": "system", "content": cfg.instructions }));
-    }
-    for item in items {
-        messages.push(json!({ "role": item.role, "content": item.content }));
-    }
-    if messages.is_empty() {
-        return Err("对话是空的".to_owned());
-    }
-    let mut body = json!({
-        "model": cfg.model.clone().unwrap_or_default(),
-        "messages": messages,
-        "stream": true,
-    });
-    if let Some(temperature) = cfg.temperature {
-        body["temperature"] = json!(temperature);
-    }
-    if let Some(max_tokens) = cfg.max_output_tokens {
-        body["max_completion_tokens"] = json!(max_tokens);
-    }
-    // 语音对话里不要思考链：Qwen3 默认会先想几千 token 才开口。
-    body["enable_thinking"] = json!(cfg.enable_thinking);
-    serde_json::from_value(body).map_err(|error| format!("请求体构造失败：{error}"))
-}
-
 /// 从流式 chunk 里抠出文本增量。
 fn delta_text(delta: &DeltaChatMessage) -> Option<String> {
     let content = match delta {
@@ -1469,253 +1328,6 @@ fn delta_text(delta: &DeltaChatMessage) -> Option<String> {
 
 // ---------------------------------------------------------------------------
 // 音频：缓冲 / 重采样 / PCM 转换
-// ---------------------------------------------------------------------------
-
-/// 客户端送进来的 PCM16 缓冲。
-#[derive(Default)]
-struct AudioBuffer {
-    pcm: Vec<u8>,
-    rate: u32,
-}
-
-impl AudioBuffer {
-    fn push(&mut self, bytes: &[u8]) {
-        if self.rate == 0 {
-            self.rate = DEFAULT_INPUT_RATE;
-        }
-        self.pcm.extend_from_slice(bytes);
-        let max_bytes = (u64::from(self.rate) * 2 * u64::from(MAX_BUFFER_SECS)) as usize;
-        if self.pcm.len() > max_bytes {
-            let drop_count = self.pcm.len() - max_bytes;
-            let drop_count = drop_count + (drop_count % 2);
-            self.pcm.drain(..drop_count);
-        }
-    }
-
-    fn clear(&mut self) {
-        self.pcm.clear();
-    }
-
-    fn duration_ms(&self) -> u64 {
-        let rate = if self.rate == 0 {
-            DEFAULT_INPUT_RATE
-        } else {
-            self.rate
-        };
-        (self.pcm.len() as u64 * 1000) / (u64::from(rate) * 2)
-    }
-
-    /// 取走缓冲（顺带清空），转成目标采样率的 f32 样本。
-    fn take_samples(&mut self, target_rate: u32) -> Vec<f32> {
-        let rate = if self.rate == 0 {
-            DEFAULT_INPUT_RATE
-        } else {
-            self.rate
-        };
-        let samples = pcm16_to_f32(&self.pcm);
-        self.pcm.clear();
-        resample_f32(&samples, rate, target_rate)
-    }
-}
-
-/// PCM16LE 字节 → 归一化 f32。
-fn pcm16_to_f32(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|pair| i16::from_le_bytes(*pair) as f32 / 32768.0)
-        .collect()
-}
-
-/// 归一化 f32 → PCM16LE 字节。
-fn f32_to_pcm16(samples: &[f32]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(samples.len() * 2);
-    for sample in samples {
-        let value = (sample.clamp(-1.0, 1.0) * 32767.0).round() as i16;
-        bytes.extend_from_slice(&value.to_le_bytes());
-    }
-    bytes
-}
-
-/// 线性插值重采样。语音这种带宽（8k–48k）够用，不值得为它上 sinc。
-fn resample_f32(samples: &[f32], from: u32, to: u32) -> Vec<f32> {
-    if samples.is_empty() || from == 0 || to == 0 || from == to {
-        return samples.to_vec();
-    }
-    let ratio = f64::from(to) / f64::from(from);
-    let out_len = ((samples.len() as f64) * ratio).round() as usize;
-    let mut out = Vec::with_capacity(out_len);
-    for index in 0..out_len {
-        let position = index as f64 / ratio;
-        let left = position.floor() as usize;
-        let right = (left + 1).min(samples.len() - 1);
-        let weight = (position - left as f64) as f32;
-        let value = samples[left.min(samples.len() - 1)] * (1.0 - weight) + samples[right] * weight;
-        out.push(value);
-    }
-    out
-}
-
-/// PCM16 字节直接重采样到另一个采样率（TTS 出音频用）。
-fn resample_pcm16(pcm: &[u8], from: u32, to: u32) -> Vec<u8> {
-    f32_to_pcm16(&resample_f32(&pcm16_to_f32(pcm), from, to))
-}
-
-// ---------------------------------------------------------------------------
-// 回合检测：能量 VAD
-// ---------------------------------------------------------------------------
-
-enum VadEvent {
-    Start,
-    Stop,
-}
-
-/// 能量 VAD：按 20ms 帧算 RMS，超过阈值算说话，静音够久算说完。
-///
-/// 没用 FireRedVad 是因为它按"整段人声"出结果（内部要缓存到一句话结束），
-/// 拿不到 `speech_started` 这种毫秒级事件；而实时对话里"开口就停"比"识别准"更要紧。
-struct EnergyVad {
-    turn: TurnDetection,
-    rate: u32,
-    frame_samples: usize,
-    frame: Vec<f32>,
-    in_speech: bool,
-    silence_samples: u64,
-    speech_samples: u64,
-}
-
-impl EnergyVad {
-    fn new(turn: TurnDetection, rate: u32) -> Self {
-        let rate = if rate == 0 { DEFAULT_INPUT_RATE } else { rate };
-        let frame_samples = ((u64::from(rate) * u64::from(VAD_FRAME_MS)) / 1000).max(16) as usize;
-        Self {
-            turn,
-            rate,
-            frame_samples,
-            frame: Vec::with_capacity(frame_samples),
-            in_speech: false,
-            silence_samples: 0,
-            speech_samples: 0,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.frame.clear();
-        self.in_speech = false;
-        self.silence_samples = 0;
-        self.speech_samples = 0;
-    }
-
-    fn push(&mut self, samples: &[f32]) -> Vec<VadEvent> {
-        let mut events = Vec::new();
-        for sample in samples {
-            self.frame.push(*sample);
-            if self.frame.len() < self.frame_samples {
-                continue;
-            }
-            let energy = self.frame.iter().map(|s| s * s).sum::<f32>() / self.frame.len() as f32;
-            let voiced = energy.sqrt() >= self.turn.threshold;
-            let frame_len = self.frame.len() as u64;
-            if voiced {
-                if !self.in_speech {
-                    self.in_speech = true;
-                    self.speech_samples = 0;
-                    events.push(VadEvent::Start);
-                }
-                self.silence_samples = 0;
-                self.speech_samples += frame_len;
-            } else if self.in_speech {
-                self.silence_samples += frame_len;
-                let silence_ms = self.silence_samples * 1000 / u64::from(self.rate);
-                if silence_ms >= self.turn.silence_duration_ms {
-                    self.in_speech = false;
-                    events.push(VadEvent::Stop);
-                }
-            }
-            // 单句上限 30s：一直有声音也别把缓冲区撑爆。
-            if self.in_speech && self.speech_samples * 1000 / u64::from(self.rate) >= 30_000 {
-                self.in_speech = false;
-                self.silence_samples = 0;
-                events.push(VadEvent::Stop);
-            }
-            self.frame.clear();
-        }
-        events
-    }
-}
-
-// ---------------------------------------------------------------------------
-// 句子切分：边生成边合成，不能等整段生成完
-// ---------------------------------------------------------------------------
-
-/// 强停顿：一句话结束。
-const SENTENCE_ENDS: &[char] = &['。', '！', '？', '!', '?', '；', ';', '\n'];
-/// 弱停顿：攒够一定长度再切，否则"你好，"这种会被切得太碎。
-const SOFT_ENDS: &[char] = &['，', ',', '、', '：', ':'];
-/// 弱停顿生效的最短长度（字符数）。
-const SOFT_MIN_CHARS: usize = 24;
-/// 首句的弱停顿门槛：宁可韵律断一下，也要早点开口。
-///
-/// 取 4 是因为中文短句常是「小柴迎客，」这种 5 字带逗号的结构：
-/// 门槛 <=4 就能在第一处逗号切开，TTS 只合成 5 个字。
-const FIRST_SENTENCE_MIN_CHARS: usize = 4;
-/// 一个停顿都没有时硬切的长度（字符数）。
-const HARD_MIN_CHARS: usize = 80;
-
-/// 从生成缓冲区里捞完整句子；`flush_all` 为真时把残余也吐出来（生成结束）。
-fn drain_sentences(buffer: &mut String, flush_all: bool) -> Vec<String> {
-    drain_sentences_with(buffer, flush_all, SOFT_MIN_CHARS, HARD_MIN_CHARS)
-}
-
-/// 同 [`drain_sentences`]，但可以自定义停顿阈值（首句用小阈值抢时间）。
-fn drain_sentences_with(
-    buffer: &mut String,
-    flush_all: bool,
-    soft_min: usize,
-    hard_min: usize,
-) -> Vec<String> {
-    let mut out = Vec::new();
-    loop {
-        let mut cut: Option<usize> = None;
-        let mut soft: Option<usize> = None;
-        for (index, ch) in buffer.char_indices() {
-            if SENTENCE_ENDS.contains(&ch) {
-                cut = Some(index + ch.len_utf8());
-                break;
-            }
-            if SOFT_ENDS.contains(&ch) {
-                soft = Some(index + ch.len_utf8());
-            }
-        }
-        if cut.is_none()
-            && let Some(position) = soft
-            && buffer[..position].chars().count() >= soft_min
-        {
-            cut = Some(position);
-        }
-        if cut.is_none() && buffer.chars().count() >= hard_min {
-            cut = buffer.char_indices().nth(hard_min).map(|(index, _)| index);
-        }
-        let Some(end) = cut else { break };
-        let piece: String = buffer.drain(..end).collect();
-        let piece = piece.trim().to_owned();
-        if !piece.is_empty() {
-            out.push(piece);
-        }
-    }
-    if flush_all {
-        let rest = buffer.trim().to_owned();
-        buffer.clear();
-        if !rest.is_empty() {
-            out.push(rest);
-        }
-    }
-    out
-}
-
-// ---------------------------------------------------------------------------
-// 模型调用（feature 开关在这里收口，没编进去就给一句能看懂的错误）
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "sherpa-asr")]
