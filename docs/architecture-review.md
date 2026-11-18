@@ -11,7 +11,7 @@
 2. **下载职责反转**：HTTP + 重试 + 续传机制在 `utils`，`models/download.rs` 只是策略外壳，所以"下载统一走 download.rs"这条规则没有结构约束。
 3. **`utils/mod.rs` 是杂物间**：设备、张量 IO、下载、文本预处理、格式化混在一个 1.1k 行的文件里。
 
-## 度量（重构前）
+## 度量（2026-11 重构前）
 
 | 信号 | 数值 |
 |---|---|
@@ -72,7 +72,7 @@ CJK 判断、语言码映射、ASR 响应清洗、目录大小、字节格式化
 （有 `self`、被 `ModelInstance` 的每个变体实现），`ExecModel` 已删，所以"三个重叠"已经变成
 "两个各司其职"，没必要再动。
 
-### P1-2 `model_mapping.rs` 的谓词（已处理一部分）
+### P1-2 `model_mapping.rs` 的谓词（已处理）
 
 **更正**：早先写的"9 个谓词每个都是对 49 个变体的 match"是错的——那 54 处 `WhichModel::`
 大部分来自枚举定义和 `model_type()`，谓词本身多是 `matches!`。真正的问题只有两个：
@@ -102,7 +102,7 @@ CJK 判断、语言码映射、ASR 响应清洗、目录大小、字节格式化
 属于过度抽象——为了消除两处 `if` 而引入一张能力和加载器都要读的表，收益是负的。判断标准：
 **能从现有谓词直接答的问题，就别新建一层。**
 
-### P2 其余（部分已做）
+### P2 其余（已做）
 
 | # | 问题 | 状态 |
 |---|---|---|
@@ -119,18 +119,38 @@ CJK 判断、语言码映射、ASR 响应清洗、目录大小、字节格式化
 - feature 命名与 CI 组合（default / sherpa / gpt-sovits / laya / vla / all-no-cuda）到位。
 - AGENTS.md 的规则具体、可检查——除了规则 3 本身在登记缺陷。
 
-## 路线（按风险从低到高）
+## 状态（2026-11 收尾）
 
-- [x] 文档：本文件
-- [x] P0-2 下载机制搬进 `models/download/`（纯搬迁 + 重导出，调用点不变）
-- [x] P0-3 拆 `utils/mod.rs` 为子模块 + 门面重导出（835 → 333 行；
-      `device` / `path` / `format` / `text` 各一文件，`mod.rs` 只留声明 + `pub use` 门面，
-      调用点零改动）。**手工做的**：自动剪枝 `import` 会破坏 `use a::{b, c}` 分组语法，
-      必须一次一个子模块、剪完立刻编译。
-- [ ] P1-2 谓词数据化（为 P0-1 铺路）
-- [ ] P1-3 `if 模型 == X` → 能力位
-- [ ] P0-1 单点注册表 + P1-1 合并 trait / `exec` 降级
-- [ ] P2 逐项清理
+| 项 | 结论 | 结果 |
+|---|---|---|
+| 审查文档 | ✅ | 本文件 |
+| P0-2 下载职责反转 | ✅ | 机制搬进 `models/download/http.rs`（393 行），`utils` 不再导出下载原语 |
+| P0-3 `utils` 杂物间 | ✅ | 835 → 333 行，拆出 `device` / `path` / `format` / `text`，门面重导出、调用点零改动 |
+| P1-1 `exec` 平行注册表 | ✅ | 删假 trait（`run` 是静态方法、25 个 struct 从未实例化），`exec/` 降级为 `cli/exec/`，去 glob |
+| P1-2 谓词 | ✅ | `is_gguf` 改显式列变体；删 `is_onnx` + 三处**永远为假**的死分支 + `is_pet_delegated_model` 的两份重复定义；加回归测试 |
+| P1-3 `if 模型 == X` | ✅（缩小范围） | `is_sherpa_model` 改为无条件存在，加载器少 12 行 cfg 绕圈；**明确不做能力位表**（见该节） |
+| P2-1 `voxcpm_refact` 半成品 | ✅ | 零件搬过去、删老 `generate.rs`、refact 提正为主实现（3,516 → 3,227 行，一套实现一条链） |
+| P2-2 巨文件 | ✅ | `server/realtime.rs` 1985 → 1597，拆出 `protocol` / `audio` / `sentences` |
+| P2-3 laya 泄漏 | ✅ | `laya::route::MIN_CONFIDENCE` 收成 `laya::MIN_CONFIDENCE` |
+| P2-4 清单多处维护 | ✅ | 枚举 → `aha list --json` → `scripts/gen_model_docs.py` → 文档，外加单测 `docs_list_every_model` |
+| P2-5 `allow(unused)` | ✅ | 27 处收窄为 `allow(dead_code)` / `cfg_attr(not(feature=...))`；默认 / sherpa / gpt-sovits / qnn / cuda / **all-no-cuda** 六种配置 warning = 0 |
+| P0-1 单点注册表 | ❌ **不做** | 它的本质是引入 `ModelSpec` 表 + fn pointer，属于新抽象；按"不过度抽象"的决定缓办。真要拾，从 `models/mod.rs` 的 `load_model` 分支入手，把表建在 `models/` 内部即可 |
 
-每步的验收口径一致：`cargo check` 覆盖 default / sherpa / gpt-sovits / qnn / llama /
-cuda 组合，`cargo test --lib` 全过，Android 构建能过（`scripts/build_android.py`）。
+验收口径（每一步都跑过）：`cargo check` 覆盖 default / sherpa / gpt-sovits / qnn / cuda /
+**sherpa,gpt-sovits,laya,vla**（CI 的 all-no-cuda 组合）/ llama；`cargo test --lib` 全过；
+`rustfmt` 干净；`scripts/build_android.py` 能过。
+
+> 教训一条：验证矩阵必须包含 **all-no-cuda 组合**。只测单个 feature 会漏掉
+> 「A 特性下只赋值一次、B 特性下二次赋值」这类交叉问题——`let mut model_path` 就是这么翻车的。
+
+## 后续建议（要做的话，按这个顺序）
+
+1. **`prepare_tts_text` / `clean_asr_response` 从 `utils/text.rs` 回到各自模型的前端**
+   （`gpt_sovits` / `qwen3_asr`）——现在它们还在通用层，模型方言不该在 utils 里。
+2. **`llama_bindings.rs` 的 592 条 warning**：`extern "C"` 声明的 `snake_case` 风格告警，
+   惯例做法是给那个文件加 `#![allow(non_camel_case_types, non_snake_case)]` 并说明它是绑定的。
+3. **`ModelInstance` + `load_model` 仍是两套清单**（P0-1 的残余）。不想引入表的话，退而求其次：
+   给 `load_model` 的兜底分支加一条明确的错误信息 + 一个 `every_variant_reaches_a_loader`
+   的测试（用不存在的路径喂每个变体，断言报错不是"未知模型"）。
+4. **`server/realtime/mod.rs` 还有 1597 行**：下一步能拆的是 `Conn` 的会话状态方法（约 380 行），
+   但 `run_response` / `tts_worker` 是编排主体，拆开反而难读——拆到合适为止，别为了行数拆。
