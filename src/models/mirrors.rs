@@ -7,7 +7,7 @@
 //!   ModelScope 上没有同名仓库；
 //! - TurboVLA / GPT-SoVITS / Qwen3.5 GGUF 是本地转换/挑文件后传上去的镜像。
 //!
-//! 下载路径（CLI、FFI、各模型模块的 `ensure_downloaded`）都从这里取仓库名，避免同一个
+//! 下载路径（CLI、FFI、各模型模块的 `ensure_*`（sherpa 走 `download::ensure_files`））都从这里取仓库名，避免同一个
 //! 仓库 id 散落在几个地方各写一份、改一处漏一处。
 //!
 //! `files` 是"推理真正要用的文件"：`Some` 表示只下这些，`None` 表示整个仓库都要

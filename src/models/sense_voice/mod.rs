@@ -96,7 +96,7 @@ impl SenseVoiceModel {
                 tokens: Some(tokens.to_string()),
                 num_threads,
                 model_type: Some("sense_voice".to_string()),
-                provider: crate::models::common::runtime::sherpa::onnx_provider(),
+                provider: crate::utils::npu::effective_provider(),
                 ..Default::default()
             },
             ..Default::default()

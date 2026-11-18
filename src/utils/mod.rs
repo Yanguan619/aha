@@ -894,7 +894,7 @@ async fn download_file(
     }
 
     // 先写 `<file>.part`，校验大小后再改名：进程中途被杀也不会留下"看起来完整"的半截文件
-    // （`ensure_downloaded` 这类调用只按文件是否存在判断，半截文件会被当成已下完）。
+    // （`ensure_files` 这类调用只看文件在不在，半截文件会被当成已下完）。
     let mut out = if append {
         // 续上的那部分也算进度，否则进度条会从 0 开始骗人。
         tracker.resume(have);

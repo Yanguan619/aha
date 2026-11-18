@@ -83,12 +83,17 @@ pub fn ensure_gguf_blocking(model_id: &str, dir: &str) -> Result<(String, Option
     })
 }
 
-/// 确保镜像表登记的文件都在（缺就整份清单重下）。
+/// 确保镜像表登记的文件都在**且非空**（缺就整份清单重下）。
+///
+/// 这是"首次启动自动拉权重"的统一入口：文件清单来自 [`crate::models::mirrors`]，
+/// 下载细节在 [`download_into`]，重试也在那里。sherpa 模型（SenseVoice / Kokoro）
+/// 就走这里，模型模块不要再自己拼仓库名、文件列表或重试逻辑。
 pub async fn ensure_files(model_id: &str, dir: &Path, max_retries: u32) -> Result<()> {
     let files = mirror_entry(model_id)
         .1
         .ok_or_else(|| anyhow!("{model_id} 没有在 mirrors 里登记文件清单"))?;
-    if files.iter().all(|file| dir.join(file).is_file()) {
+    if files.iter().all(|file| present(dir, file)) {
+        tracing::info!(model_id, dir = %dir.display(), "模型文件已就绪（跳过下载）");
         return Ok(());
     }
     tracing::info!(model_id, dir = %dir.display(), "从 ModelScope 下载模型权重");
@@ -96,12 +101,20 @@ pub async fn ensure_files(model_id: &str, dir: &Path, max_retries: u32) -> Resul
     let missing: Vec<&str> = files
         .iter()
         .copied()
-        .filter(|file| !dir.join(file).is_file())
+        .filter(|file| !present(dir, file))
         .collect();
     if !missing.is_empty() {
         bail!("{model_id} 下载完仍缺文件：{}", missing.join(", "));
     }
     Ok(())
+}
+
+/// 文件在不在、且不是 0 字节（下载中断留下的空文件不算数）。
+fn present(dir: &Path, file: &str) -> bool {
+    dir.join(file)
+        .metadata()
+        .map(|meta| meta.is_file() && meta.len() > 0)
+        .unwrap_or(false)
 }
 
 /// 确保 `dir` 是一份"能加载的权重目录"：`looks_like` 认了就直接返回，
@@ -259,6 +272,23 @@ mod tests {
     fn model_dir_joins_id_under_save_dir() {
         let dir = model_dir("qwen3.5-gguf", Some("/tmp/aha")).unwrap();
         assert_eq!(dir, PathBuf::from("/tmp/aha/qwen3.5-gguf"));
+    }
+
+    #[test]
+    fn sherpa_mirrors_keep_their_repos() {
+        // HF 上的 `csukuangfj/...` 在 ModelScope 没有同名镜像（直接查会 404），别改回去。
+        #[cfg(feature = "sherpa-asr")]
+        {
+            let (repo, files) = mirror_entry(crate::models::mirrors::SENSE_VOICE_MODEL_ID);
+            assert!(repo.starts_with("WEAAEW/"), "{repo}");
+            assert!(files.is_some_and(|f| f.contains(&"model.int8.onnx")));
+        }
+        #[cfg(feature = "sherpa-tts")]
+        {
+            let (repo, files) = mirror_entry(crate::models::mirrors::KOKORO_MODEL_ID);
+            assert!(repo.starts_with("journey0ad/"), "{repo}");
+            assert!(files.is_some_and(|f| f.contains(&"dict/jieba.dict.utf8")));
+        }
     }
 
     #[test]
