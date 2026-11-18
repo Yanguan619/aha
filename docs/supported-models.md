@@ -148,6 +148,72 @@ ZhipuAI/GLM-OCR                          ZhipuAI              ocr          ✔
 |-------|------|-------------|---------|
 | **RMBG-2.0** | Background Removal | AI-ModelScope/RMBG-2.0 | [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/deed.en) |
 
+## Platform and device support
+
+What runs where is decided by the **backend**, not by the model: the candle family runs everywhere,
+while sherpa / llama.cpp / QNN each have platform limits.
+
+Legend: **✅** = covered by this repo's CI (`ubuntu-latest` + `macos-latest`, running `scripts/ci.py`
+with the default / sherpa / gpt-sovits / laya / vla / all-no-cuda sets) or verified locally for
+build + tests; **⚠️** = the code path exists but has not been verified on that platform;
+**❌** = explicitly unsupported.
+
+### Backend x platform
+
+| Backend | cargo feature | Windows | Linux | macOS | Android |
+|---------|---------------|---------|-------|-------|---------|
+| candle CPU | default | ✅ local | ✅ CI | ✅ CI | ✅ arm64-v8a (on device) / armeabi-v7a / x86_64 |
+| candle CUDA | `cuda` | ⚠️ needs NVIDIA driver + CUDA | ⚠️ same | — | — |
+| candle Metal | `metal` | — | — | ⚠️ Apple Silicon | — |
+| Intel MKL | `mkl` | ⚠️ x86 only, first build pulls ~1 GB | ⚠️ same | — | — |
+| sherpa-onnx (ONNX Runtime) | `sherpa-asr` / `sherpa-tts` | ⚠️ needs `onnxruntime.dll` | ✅ CI | ✅ CI | ✅ needs bundled `libonnxruntime.so` |
+| llama.cpp | `llama` | ❌ | ❌ | ❌ | ✅ Android only (`build.rs` skips linking for non-Android targets) |
+| QNN / Hexagon HTP | `qnn` | ❌ | ❌ | ❌ | ✅ Snapdragon (HTP v81 measured); currently only wired to the SoVITS decoder |
+| Laya routing model | `laya` | ⚠️ | ✅ CI | ✅ CI | ⚠️ |
+| TurboVLA | `vla` | ⚠️ | ✅ CI | ✅ CI | ⚠️ |
+
+The `aha npu` and `aha qnn` subcommands **only exist in Android builds**: the first is
+`#[cfg(target_os = "android")]`, the second `#[cfg(feature = "qnn")]` (added automatically by the
+Android build script). Desktops instead support ONNX Runtime's `cuda` / `coreml` / `trt` / `openvino` /
+`plugin:...` providers through `--provider`, which need no probing.
+
+### Model family x platform
+
+| Model | Backend | Windows | Linux | macOS | Android |
+|-------|---------|---------|-------|-------|---------|
+| Qwen3-0.6B / 1.7B / 4B, MiniCPM4-0.5B, MiniCPM5-1B, LFM2-1.2B (llm) | candle | ✅ | ✅ | ✅ | ✅ (0.5B–2B practical) |
+| Qwen2.5-VL, Qwen3-VL, Qwen3.5, LFM2-VL (vlm) | candle | ✅ | ✅ | ✅ | ⚠️ builds and runs; 0.8B/2B fine, 4B+ is memory bound |
+| **Hy-MT2 1.25bit (STQ)** | llama.cpp | ❌ | ❌ | ❌ | ✅ the only platform that can run it |
+| qwen3.5-gguf (Q4_K_M + mmproj, candle's gguf path) | candle | ✅ | ✅ | ✅ | ✅ (0.8B quantized) |
+| Qwen3-Embedding / Qwen3-Reranker | candle | ✅ | ✅ | ✅ | ✅ (0.6B); 4B / 8B memory bound |
+| DeepSeek-OCR, PaddleOCR-VL, HunyuanOCR, GLM-OCR | candle | ✅ | ✅ | ✅ | ⚠️ not verified on device |
+| RMBG-2.0 (image) | candle | ✅ | ✅ | ✅ | ⚠️ not verified on device |
+| VoxCPM 0.5B / 1.5 / 2 (tts) | candle | ✅ | ✅ | ✅ | ⚠️ not verified on device |
+| Kokoro (tts) | sherpa-tts | ⚠️ needs ORT | ✅ | ✅ | ✅ needs ORT `.so` |
+| SenseVoice (asr) | sherpa-asr | ⚠️ needs ORT | ✅ | ✅ | ✅ needs ORT `.so` |
+| Qwen3-ASR, GLM-ASR-Nano, Fun-ASR-Nano (asr) | candle | ✅ | ✅ | ✅ | ⚠️ not verified on device |
+| GPT-SoVITS v2Pro (tts) | `gpt-sovits` (+ optional `qnn`) | ✅ | ✅ | ✅ | ✅ via candle; decoder can use QNN (see [npu.md](npu.md) — 775 ms/run, CPU stays the default) |
+| Laya (system1) | `laya` | ⚠️ | ✅ | ✅ | ⚠️ |
+| TurboVLA (vla) | `vla` | ⚠️ | ✅ | ✅ | ⚠️ |
+
+> "✅ CI" only means the build and unit tests pass on that platform — **not** that every model has
+> been run end to end there. The ✅ entries in the Android column come from on-device testing
+> (SM8850 / Android 17) or from cross-compilation.
+
+### Hard limits on Android
+
+1. **CPU only**: candle has no mobile GPU / NPU backend, so `cuda` / `metal` / `mkl` are meaningless there.
+2. **Memory decides what fits**: unquantized it is roughly parameters x 2 bytes plus KV cache. 0.6B–2B is
+   comfortable, 4B needs 8 GB+ and is not guaranteed, 8B / 32B is unrealistic on a phone. Larger models
+   only make sense as GGUF quantization (e.g. the 0.8B Q4_K_M in `qwen3.5-gguf`).
+3. **sherpa models must ship `libonnxruntime.so`**: without it `SenseVoice` / `Kokoro` cannot start. Inside
+   an APK it lives under `lib/arm64-v8a/`; set `ApplicationInfo.nativeLibraryDir` into `AHA_NPU_LIB_DIR`
+   so it is found.
+4. **Hy-MT2 needs the llama.cpp static library first**: `native/scripts/build-llama.sh arm64-v8a`
+   (`.ps1` on Windows), then `python scripts/build_android.py --features llama`.
+5. **QNN is only wired to the SoVITS decoder's float32 graph**, no other model has a QNN path, and it
+   measures 775 ms per run (desktop CPU reference: 330 ms) — so CPU remains the deployment default.
+
 ## Model Sources
 
 Models are sourced from:

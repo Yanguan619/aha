@@ -142,6 +142,66 @@ ZhipuAI/GLM-OCR                          ZhipuAI              ocr          ✔
 |------|------|-----|---------|
 | **RMBG-2.0** | 背景移除 | AI-ModelScope/RMBG-2.0 | [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/deed.zh-hans) |
 
+## 平台与设备支持矩阵
+
+能跑哪些模型取决于**后端**，不取决于模型本身：candle 家族到处能跑，sherpa / llama.cpp / QNN 各有平台限制。
+
+标记含义：**✅** = 仓库 CI（Linux `ubuntu-latest` + macOS `macos-latest`，跑 `scripts/ci.py` 的
+default / sherpa / gpt-sovits / laya / vla / all-no-cuda 组合）或本机实测覆盖了编译 + 测试；
+**⚠️** = 代码路径存在，但没在对应平台验证过；**❌** = 明确不支持。
+
+### 后端 × 平台
+
+| 后端 | cargo feature | Windows | Linux | macOS | Android |
+|------|---------------|---------|-------|-------|---------|
+| candle CPU | 默认 | ✅ 本机 | ✅ CI | ✅ CI | ✅ arm64-v8a（真机）/ armeabi-v7a / x86_64 |
+| candle CUDA | `cuda` | ⚠️ 需 NVIDIA 驱动与 CUDA | ⚠️ 同左 | — | — |
+| candle Metal | `metal` | — | — | ⚠️ Apple Silicon | — |
+| Intel MKL | `mkl` | ⚠️ 仅 x86，首次构建要下约 1 GB | ⚠️ 同左 | — | — |
+| sherpa-onnx（ONNX Runtime） | `sherpa-asr` / `sherpa-tts` | ⚠️ 需 `onnxruntime.dll` | ✅ CI | ✅ CI | ✅ 需随包 `libonnxruntime.so` |
+| llama.cpp | `llama` | ❌ | ❌ | ❌ | ✅ 仅 Android（`build.rs` 在非 Android 目标直接跳过链接） |
+| QNN / Hexagon HTP | `qnn` | ❌ | ❌ | ❌ | ✅ 骁龙（HTP v81 实测），目前只接 SoVITS 解码器 |
+| Laya 决策模型 | `laya` | ⚠️ | ✅ CI | ✅ CI | ⚠️ |
+| TurboVLA | `vla` | ⚠️ | ✅ CI | ✅ CI | ⚠️ |
+
+`aha npu` / `aha qnn` 两个子命令**只在 Android 构建里存在**：前者是 `#[cfg(target_os = "android")]`，
+后者是 `#[cfg(feature = "qnn")]`（Android 构建脚本自动加）。桌面端支持的是 ONNX Runtime 的
+`cuda` / `coreml` / `trt` / `openvino` / `plugin:...` provider，用 `--provider` 选，不需要探测。
+
+### 模型族 × 平台
+
+| 模型 | 后端 | Windows | Linux | macOS | Android |
+|------|------|---------|-------|-------|---------|
+| Qwen3-0.6B / 1.7B / 4B、MiniCPM4-0.5B、MiniCPM5-1B、LFM2-1.2B（llm） | candle | ✅ | ✅ | ✅ | ✅（0.5B–2B 实用） |
+| Qwen2.5-VL、Qwen3-VL、Qwen3.5、LFM2-VL（vlm） | candle | ✅ | ✅ | ✅ | ⚠️ 能编能跑，0.8B/2B 可行，4B 起受内存限制 |
+| **Hy-MT2 1.25bit（STQ）** | llama.cpp | ❌ | ❌ | ❌ | ✅ 唯一可跑平台 |
+| qwen3.5-gguf（Q4_K_M + mmproj，candle 的 gguf 路径） | candle | ✅ | ✅ | ✅ | ✅（0.8B 量化） |
+| Qwen3-Embedding / Qwen3-Reranker | candle | ✅ | ✅ | ✅ | ✅（0.6B），4B / 8B 受内存限制 |
+| DeepSeek-OCR、PaddleOCR-VL、HunyuanOCR、GLM-OCR | candle | ✅ | ✅ | ✅ | ⚠️ 未在真机验证 |
+| RMBG-2.0（image） | candle | ✅ | ✅ | ✅ | ⚠️ 未在真机验证 |
+| VoxCPM 0.5B / 1.5 / 2（tts） | candle | ✅ | ✅ | ✅ | ⚠️ 未在真机验证 |
+| Kokoro（tts） | sherpa-tts | ⚠️ 需 ORT | ✅ | ✅ | ✅ 需 ORT `.so` |
+| SenseVoice（asr） | sherpa-asr | ⚠️ 需 ORT | ✅ | ✅ | ✅ 需 ORT `.so` |
+| Qwen3-ASR、GLM-ASR-Nano、Fun-ASR-Nano（asr） | candle | ✅ | ✅ | ✅ | ⚠️ 未在真机验证 |
+| GPT-SoVITS v2Pro（tts） | `gpt-sovits`（+ 可选 `qnn`） | ✅ | ✅ | ✅ | ✅ candle 路径；解码器可选走 QNN（见 [npu.zh-CN.md](npu.zh-CN.md)，实测 775 ms/次，默认仍走 CPU） |
+| Laya（system1） | `laya` | ⚠️ | ✅ | ✅ | ⚠️ |
+| TurboVLA（vla） | `vla` | ⚠️ | ✅ | ✅ | ⚠️ |
+
+> “✅ CI”只说明构建 + 单元测试在那个平台过了，**不等于**每个模型都在那里跑过端到端推理。
+> Android 一列的 ✅ 来自真机（SM8850 / Android 17）实测或交叉编译验证。
+
+### Android 侧的硬限制
+
+1. **只有 CPU**：candle 没有移动端 GPU / NPU 后端，`cuda` / `metal` / `mkl` 在 Android 上没有意义。
+2. **内存决定能跑多大**：不量化时大致是参数量 × 2 字节，再加 KV cache。0.6B–2B 稳；4B 要 8 GB 以上且不保证；
+   8B / 32B 在手机上不现实。想上大模型只能走 GGUF 量化（例如 `qwen3.5-gguf` 的 0.8B Q4_K_M）。
+3. **sherpa 模型要随包发 `libonnxruntime.so`**，否则 `SenseVoice` / `Kokoro` 起不来。
+   APK 里它位于 `lib/arm64-v8a/`，Java 侧把 `ApplicationInfo.nativeLibraryDir` 设进 `AHA_NPU_LIB_DIR` 即可被找到。
+4. **Hy-MT2 必须先编 llama.cpp 静态库**：`native/scripts/build-llama.sh arm64-v8a`（Windows 用 `.ps1`），
+   再 `python scripts/build_android.py --features llama`。
+5. **QNN 目前只接 SoVITS 解码器**的 float32 图，其余模型没有 QNN 路径；而且实测单次 775 ms（桌面 CPU 参考 330 ms），
+   所以部署默认仍走 CPU。
+
 ## 模型来源
 
 模型来源：
