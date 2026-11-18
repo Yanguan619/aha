@@ -2,53 +2,62 @@
 
 aha 支持多个领域的最先进 AI 模型集合。
 
+> 下表由 `aha list --json` 生成（唯一来源是 `WhichModel` 枚举），**不要手改**；
+> 新增模型后跑 `cargo run -- list --json` + `scripts/gen_model_docs.py` 重生成。
 ```shell
 Available models:
 
-Model ID                                 Owner                type       Download  
---------------------------------------------------------------------------------
-sentence-transformers/all-MiniLM-L6-v2   sentence-transformers embedding    ✔       
-LiquidAI/LFM2-1.2B                       LiquidAI             llm          ✔       
-LiquidAI/LFM2.5-1.2B-Instruct            LiquidAI             llm          ✔       
-LiquidAI/LFM2.5-VL-1.6B                  LiquidAI             vlm          ✔       
-LiquidAI/LFM2-VL-1.6B                    LiquidAI             vlm          ✔       
-OpenBMB/MiniCPM4-0.5B                    OpenBMB              llm          ✔   
-OpenBMB/MiniCPM5-1B                      OpenBMB              llm          ✔       
-Qwen/Qwen2.5-VL-3B-Instruct              Qwen                 vlm          ✔       
-Qwen/Qwen2.5-VL-7B-Instruct              Qwen                 vlm                  
-Qwen/Qwen3-0.6B                          Qwen                 llm          ✔       
-Qwen/Qwen3-1.7B                          Qwen                 llm          ✔       
-Qwen/Qwen3-4B                            Qwen                 llm          ✔       
-Qwen/Qwen3.5-0.8B                        Qwen                 vlm          ✔       
-Qwen/Qwen3.5-2B                          Qwen                 vlm                  
-Qwen/Qwen3.5-4B                          Qwen                 vlm                  
-Qwen/Qwen3.5-9B                          Qwen                 vlm                  
-qwen3.5-gguf                             none                 vlm                  
-hy-mt2-1.8b-1.25bit-gguf                 Tencent-Hunyuan      llm                  
-Qwen/Qwen3-ASR-0.6B                      Qwen                 asr          ✔       
-Qwen/Qwen3-ASR-1.7B                      Qwen                 asr                  
-Qwen/Qwen3-Embedding-0.6B                Qwen                 embedding    ✔       
-Qwen/Qwen3-Embedding-4B                  Qwen                 embedding            
-Qwen/Qwen3-Embedding-8B                  Qwen                 embedding            
-Qwen/Qwen3-Reranker-0.6B                 Qwen                 reranker     ✔       
-Qwen/Qwen3-Reranker-4B                   Qwen                 reranker             
-Qwen/Qwen3-Reranker-8B                   Qwen                 reranker             
-Qwen/Qwen3-VL-2B-Instruct                Qwen                 vlm          ✔       
-Qwen/Qwen3-VL-4B-Instruct                Qwen                 vlm                  
-Qwen/Qwen3-VL-8B-Instruct                Qwen                 vlm                  
-Qwen/Qwen3-VL-32B-Instruct               Qwen                 vlm                  
-deepseek-ai/DeepSeek-OCR                 deepseek-ai          ocr          ✔       
-deepseek-ai/DeepSeek-OCR-2               deepseek-ai          ocr                  
-Tencent-Hunyuan/HunyuanOCR               Tencent-Hunyuan      ocr          ✔       
-PaddlePaddle/PaddleOCR-VL                PaddlePaddle         ocr          ✔       
-PaddlePaddle/PaddleOCR-VL-1.5            PaddlePaddle         ocr
-PaddlePaddle/PaddleOCR-VL-1.6            PaddlePaddle         ocr          ✔                  
-AI-ModelScope/RMBG-2.0                   AI-ModelScope        image        ✔       
-OpenBMB/VoxCPM-0.5B                      OpenBMB              tts          ✔       
-OpenBMB/VoxCPM1.5                        OpenBMB              tts          ✔       
-ZhipuAI/GLM-ASR-Nano-2512                ZhipuAI              asr          ✔       
-FunAudioLLM/Fun-ASR-Nano-2512            FunAudioLLM          asr          ✔       
-ZhipuAI/GLM-OCR                          ZhipuAI              ocr          ✔
+Model ID                                                       Owner                  type
+------------------------------------------------------------------------------------------------
+sentence-transformers/all-MiniLM-L6-v2                         sentence-transformers  embedding
+LiquidAI/LFM2-1.2B                                             LiquidAI               llm
+LiquidAI/LFM2.5-1.2B-Instruct                                  LiquidAI               llm
+LiquidAI/LFM2.5-VL-1.6B                                        LiquidAI               vlm
+LiquidAI/LFM2.5-VL-450M                                        LiquidAI               vlm
+LiquidAI/LFM2-VL-1.6B                                          LiquidAI               vlm
+OpenBMB/MiniCPM4-0.5B                                          OpenBMB                llm
+OpenBMB/MiniCPM5-1B                                            OpenBMB                llm
+Qwen/Qwen2.5-VL-3B-Instruct                                    Qwen                   vlm
+Qwen/Qwen2.5-VL-7B-Instruct                                    Qwen                   vlm
+Qwen/Qwen3-0.6B                                                Qwen                   llm
+Qwen/Qwen3-1.7B                                                Qwen                   llm
+Qwen/Qwen3-4B                                                  Qwen                   llm
+Qwen/Qwen3.5-0.8B                                              Qwen                   vlm
+Qwen/Qwen3.5-2B                                                Qwen                   vlm
+Qwen/Qwen3.5-4B                                                Qwen                   vlm
+Qwen/Qwen3.5-9B                                                Qwen                   vlm
+qwen3.5-gguf                                                   Yanguan                vlm
+hy-mt2-1.8b-1.25bit-gguf                                       Tencent-Hunyuan        llm
+Qwen/Qwen3-ASR-0.6B                                            Qwen                   asr
+Qwen/Qwen3-ASR-1.7B                                            Qwen                   asr
+Qwen/Qwen3-Embedding-0.6B                                      Qwen                   embedding
+Qwen/Qwen3-Embedding-4B                                        Qwen                   embedding
+Qwen/Qwen3-Embedding-8B                                        Qwen                   embedding
+Qwen/Qwen3-Reranker-0.6B                                       Qwen                   reranker
+Qwen/Qwen3-Reranker-4B                                         Qwen                   reranker
+Qwen/Qwen3-Reranker-8B                                         Qwen                   reranker
+Qwen/Qwen3-VL-2B-Instruct                                      Qwen                   vlm
+Qwen/Qwen3-VL-4B-Instruct                                      Qwen                   vlm
+Qwen/Qwen3-VL-8B-Instruct                                      Qwen                   vlm
+Qwen/Qwen3-VL-32B-Instruct                                     Qwen                   vlm
+deepseek-ai/DeepSeek-OCR                                       deepseek-ai            ocr
+deepseek-ai/DeepSeek-OCR-2                                     deepseek-ai            ocr
+Tencent-Hunyuan/HunyuanOCR                                     Tencent-Hunyuan        ocr
+PaddlePaddle/PaddleOCR-VL                                      PaddlePaddle           ocr
+PaddlePaddle/PaddleOCR-VL-1.5                                  PaddlePaddle           ocr
+PaddlePaddle/PaddleOCR-VL-1.6                                  PaddlePaddle           ocr
+AI-ModelScope/RMBG-2.0                                         AI-ModelScope          image
+OpenBMB/VoxCPM-0.5B                                            OpenBMB                tts
+OpenBMB/VoxCPM1.5                                              OpenBMB                tts
+OpenBMB/VoxCPM2                                                OpenBMB                tts
+ZhipuAI/GLM-ASR-Nano-2512                                      ZhipuAI                asr
+FunAudioLLM/Fun-ASR-Nano-2512                                  FunAudioLLM            asr
+ZhipuAI/GLM-OCR                                                ZhipuAI                ocr
+csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17  csukuangfj             asr
+csukuangfj/kokoro-multi-lang-v1_1                              csukuangfj             tts
+convaiinnovations/laya-multilingual                            convaiinnovations      system1
+OpenBMB/TurboVLA                                               OpenBMB                vla
+gpt-sovits-v2pro-zh                                            Yanguan                tts
 ```
 
 ## 文本生成

@@ -189,11 +189,15 @@ impl WhichModel {
     /// the organization or user who owns the model in Hugging Face format (e.g., "Qwen" from "Qwen/Qwen3-0.6B")
     /// Returns "none" if the model ID doesn't contain a '/' separator
     pub fn model_owner(&self) -> String {
-        // GGUF 侧用的是短 id（没有 org 前缀，避免下载目录嵌套），作者在这里补上。
-        if matches!(self, WhichModel::HyMT2Gguf) {
-            return "Tencent-Hunyuan".to_string();
-        }
         let name = self.as_string();
+        // 少数模型用的是短 id（没有 org 前缀，避免下载目录嵌套），owner 从 mirrors
+        // 里登记的仓库 id 反推——别再一个模型一个 `matches!` 地补。
+        if !name.contains('/')
+            && let Some(mirror) = crate::models::mirrors::mirror(&name)
+            && let Some(owner) = mirror.repo.split('/').next()
+        {
+            return owner.to_string();
+        }
         let names: Vec<&str> = name.split("/").collect();
         if names.len() < 2 {
             "none".to_string()
@@ -270,6 +274,32 @@ impl WhichModel {
 #[cfg(test)]
 mod tests {
     use super::WhichModel;
+
+    /// 文档里的模型清单必须覆盖枚举：加了模型忘了同步 docs，这条测试会红。
+    ///
+    /// 只查"枚举 → 文档"这一个方向；反方向查不了（没编对应 feature 时枚举里没有那些变体）。
+    #[test]
+    fn docs_list_every_model() {
+        let docs = [
+            (
+                "docs/supported-models.md",
+                include_str!("../../../docs/supported-models.md"),
+            ),
+            (
+                "docs/supported-models.zh-CN.md",
+                include_str!("../../../docs/supported-models.zh-CN.md"),
+            ),
+        ];
+        for (name, doc) in docs {
+            for model in WhichModel::model_list() {
+                let id = model.as_string();
+                assert!(
+                    doc.contains(&id),
+                    "{name} 里没有 {id}：新增模型后跑 `cargo run -- list --json` 重生成清单"
+                );
+            }
+        }
+    }
 
     /// `is_gguf` 以前判断"model id 里含不含 gguf"，等于让**展示名**决定后端路由：
     /// 谁改一下 id 就会静悄悄地换掉加载路径。回归守住"只有这两个变体算 GGUF"。

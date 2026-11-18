@@ -346,7 +346,10 @@ pub(crate) async fn run_serv(args: ServArgs) -> anyhow::Result<()> {
 
     init_inference_backend(&pet.device, pet.provider.as_deref())?;
 
-    let model_path;
+    // `laya` 分支会在下面再赋一次（先去 HF 缓存/镜像解析目录），所以这里要 mut；
+    // 没编 laya 时只赋一次，加窄 allow。
+    #[cfg_attr(not(feature = "laya"), allow(unused_mut))]
+    let mut model_path;
     let weight_path = path_common.weight_path.clone();
     let (gguf, mmproj) = if model.is_gguf() {
         model_path = "GGUF".to_string();
