@@ -76,12 +76,20 @@ CJK 判断、语言码映射、ASR 响应清洗、目录大小、字节格式化
 加了一条回归测试（`gguf_is_decided_by_variant_not_by_id`）。`model_type()` 保留原样——它确实
 是一张"模型 → 类型"的表，属于数据，不是坏味道；合并它的机会在 P0-1。
 
-### P1-3 通用层里的 `if 模型 == X`
+### P1-3 通用层里的 `if 模型 == X`（已处理，结论：不做能力位表）
 
-- `models/mod.rs`：`warn_sherpa_ignores_device`、`warn_npu_provider_on_candle`
-- `server/api.rs`：`if matches!(model, WhichModel::SenseVoice / Kokoro)`
+`models/mod.rs` 里那两条告警（`warn_sherpa_ignores_device` / `warn_npu_provider_on_candle`）
+看着像"通用加载器里判断具体模型"，但**它们本来就该在加载器里**——加载器是全流程里唯一同时
+知道"选了哪个后端"和"用户传了什么 device/provider"的地方。真正的毛病是它还要绕 cfg 去问
+"这个模型是不是 ORT 的"。
 
-**目标**：变成 ModelSpec 的能力位（`accepts_device`、`provider_kind`），加载器统一读。
+**已做**（约 −12 行）：`is_sherpa_model()` 去掉外层 `#[cfg(any(sherpa-asr, sherpa-tts))]`，
+改成无条件存在、没编后端时恒 `false`；加载器里那 10 行 `let is_ort = { #[cfg] {..} #[cfg(not)] {..} }`
+收成 `let is_ort = model.is_sherpa_model();`。
+
+**决定不做**：原先设想的"ModelSpec 能力位"（`accepts_device: bool` / `provider_kind: Candle|Ort`）
+属于过度抽象——为了消除两处 `if` 而引入一张能力和加载器都要读的表，收益是负的。判断标准：
+**能从现有谓词直接答的问题，就别新建一层。**
 
 ### P2 其余
 

@@ -133,8 +133,8 @@ impl WhichModel {
     /// （官方 `csukuangfj/...` 那边没有同名仓库），见
     /// [`crate::models::download::ensure_files`]；也可以用 `--weight-path` 指向本地目录。
     ///
-    /// 只编了其中一个后端时枚举里也只有对应的变体，所以按 feature 分开写。
-    #[cfg(any(feature = "sherpa-asr", feature = "sherpa-tts"))]
+    /// 只编了其中一个后端时枚举里也只有对应的变体，所以按 feature 分开写；
+    /// 两个后端都没编时这个方法依然存在，恒为 `false`——调用方不用再套一层 `#[cfg]`。
     pub fn is_sherpa_model(&self) -> bool {
         #[cfg(feature = "sherpa-asr")]
         if matches!(self, WhichModel::SenseVoice) {

@@ -377,18 +377,8 @@ fn warn_npu_provider_on_candle(model: WhichModel) {
     let Some(provider) = crate::utils::npu::effective_provider() else {
         return;
     };
-    // 就是 ONNX Runtime 的模型（SenseVoice / Kokoro）？`is_sherpa_model` 只在
-    // 编了 sherpa 特性时存在，没编就当成"都不是"。
-    let is_ort = {
-        #[cfg(any(feature = "sherpa-asr", feature = "sherpa-tts"))]
-        {
-            model.is_sherpa_model()
-        }
-        #[cfg(not(any(feature = "sherpa-asr", feature = "sherpa-tts")))]
-        {
-            false
-        }
-    };
+    // ONNX Runtime 的模型（SenseVoice / Kokoro）能吃 --provider，其余走 candle。
+    let is_ort = model.is_sherpa_model();
     if !crate::utils::npu::is_npu_provider(&provider) || is_ort {
         return;
     }
